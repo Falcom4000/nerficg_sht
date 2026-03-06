@@ -21,7 +21,7 @@ with utils.DiscoverSourcePath():
     from Datasets.utils import list_sorted_directories
     try:
         import Thirdparty.TinyCudaNN as tcnn
-    except ImportError:
+    except Framework.ExtensionError:
         tcnn = None
 
 
