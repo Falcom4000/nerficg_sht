@@ -1,7 +1,7 @@
-name: nerficg
+name: nerficg_colmap
 channels:
-  - defaults
   - conda-forge
+  - nodefaults  
 dependencies:
   - python=3.11
   - pip
