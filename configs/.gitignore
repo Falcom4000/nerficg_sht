@@ -3,3 +3,7 @@
 !gs_garden.yaml
 !nerf_lego.yaml
 !ingp_lego.yaml
+!test_dash_1/
+!test_fastergs_1/
+!test_dash_1/**
+!test_fastergs_1/**
