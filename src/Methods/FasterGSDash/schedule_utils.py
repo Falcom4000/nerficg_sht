@@ -152,17 +152,24 @@ class TrainingScheduler:
                 f"Densify mode '{self.densify_mode}' is not implemented."
             )
 
-    def near_full_resolution(self) -> bool:
-        """Return True once the schedule has reached (or is about to reach) scale < 2."""
+    def near_full_resolution(self, sh_unlock_scale_threshold: float = 4.0) -> bool:
+        """Return True once the schedule has advanced past the given scale threshold.
+
+        SH degree unlock is gated on this to avoid training high-order SH when there
+        is no high-frequency supervision signal.  The default threshold of 4.0 means
+        SH unlocking is allowed as soon as we have progressed past the 1/4-resolution
+        level, which gives enough detail to benefit from view-dependent colour while
+        still preventing noise-driven contamination at 1/8 resolution.
+        (Using 2.0 was too conservative: it delayed SH until ~iter 20000 on bicycle,
+        causing a ~1 dB PSNR regression.)
+        """
         if self.resolution_mode == "const":
             return True
         if self.reso_scales is None:
             return False
-        # find the first level with scale < 2
-        for begin, scale in zip(self.reso_level_begin, self.reso_scales):
-            if scale < 2.0:
-                # check whether the internal pointer has advanced past that level
-                return self.next_i - 1 >= self.reso_level_begin.index(begin)
+        for idx, (begin, scale) in enumerate(zip(self.reso_level_begin, self.reso_scales)):
+            if scale < sh_unlock_scale_threshold:
+                return self.next_i - 1 >= idx
         return True
 
     def lr_decay_from_iter(self) -> int:
