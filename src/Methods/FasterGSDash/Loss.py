@@ -6,7 +6,7 @@ import torchmetrics
 from Framework import ConfigParameterList
 from Optim.Losses.Base import BaseLoss
 from Optim.Losses.DSSIM import fused_dssim
-from Methods.FasterGS.Model import Gaussians
+from Methods.FasterGSDash.Model import Gaussians
 
 
 class FasterGSLoss(BaseLoss):

@@ -13,7 +13,7 @@ from Datasets.utils import BasicPointCloud
 from Logging import Logger
 from Methods.Base.Model import BaseModel
 from Cameras.utils import quaternion_to_rotation_matrix
-from Methods.FasterGS.FasterGSCudaBackend import FusedAdam, update_3d_filter, relocation_adjustment, add_noise
+from Methods.FasterGSDash.FasterGSCudaBackend import FusedAdam, update_3d_filter, relocation_adjustment, add_noise
 from Optim.adam_utils import replace_param_group_data, prune_param_groups, extend_param_groups, sort_param_groups, reset_state
 from Optim.lr_utils import LRDecayPolicy
 from Optim.knn_utils import compute_root_mean_squared_knn_distances
@@ -359,6 +359,99 @@ class Gaussians(torch.nn.Module):
         if prune_large_gaussians:
             prune_mask |= self._scales.max(dim=1).values > math.log(0.1 * self.training_cameras_extent)
         self.prune(prune_mask)
+
+    def dash_density_control_topk(
+        self,
+        grad_threshold: float,
+        min_opacity: float,
+        prune_large_gaussians: bool,
+        render_scale: int,
+        densify_rate: float,
+    ) -> int:
+        """DashGaussian-style densification with resolution-aware threshold and top-k budget.
+
+        Differences from adaptive_density_control:
+        - grad_threshold is scaled by render_scale² to compensate for the
+          lower gradient magnitudes produced at reduced resolution (conflict A fix).
+        - A top-k selection limits total new Gaussians to densify_rate × N,
+          so primitive growth follows the DashGaussian schedule.
+        - Returns momentum_add: the number of Gaussians that exceeded the
+          (scaled) threshold before budget capping, used to update P_fin.
+        """
+        # conflict A fix: scale threshold proportionally to resolution reduction
+        effective_threshold = grad_threshold * (render_scale ** 2)
+
+        # mean gradient magnitude per Gaussian (lazy normalisation)
+        mean_grads = self.densification_info[1] / self.densification_info[0].clamp_min(1.0)
+
+        # candidates that pass the scaled threshold
+        densify_mask = mean_grads >= effective_threshold
+        momentum_add = int(densify_mask.sum().item())
+
+        # apply top-k primitive budget
+        n_budget = max(0, int(self._means.shape[0] * densify_rate))
+        if n_budget < densify_mask.sum().item():
+            # within threshold-passing candidates, keep the top-k by gradient magnitude
+            scored = mean_grads.clone()
+            scored[~densify_mask] = -1.0
+            topk_indices = scored.topk(n_budget).indices
+            densify_mask = torch.zeros_like(densify_mask)
+            densify_mask[topk_indices] = True
+
+        is_small = torch.max(self._scales, dim=1).values <= math.log(self.percent_dense * self.training_cameras_extent)
+
+        # duplicate small gaussians
+        duplicate_mask = densify_mask & is_small
+        n_new_gaussians_duplicate = duplicate_mask.sum().item()
+        duplicated_means = self._means[duplicate_mask]
+        duplicated_sh_coefficients_0 = self._sh_coefficients_0[duplicate_mask]
+        duplicated_sh_coefficients_rest = self._sh_coefficients_rest[duplicate_mask]
+        duplicated_opacities = self._opacities[duplicate_mask]
+        duplicated_scales = self._scales[duplicate_mask]
+        duplicated_rotations = self._rotations[duplicate_mask]
+
+        # split large gaussians
+        split_mask = densify_mask & ~is_small
+        n_new_gaussians_split = 2 * split_mask.sum().item()
+        split_scales = self._scales[split_mask].exp().expand(2, -1, -1).flatten(end_dim=1)
+        split_rotations = self._rotations[split_mask].expand(2, -1, -1).flatten(end_dim=1)
+        offsets = (quaternion_to_rotation_matrix(split_rotations) @ (split_scales * torch.randn_like(split_scales))[..., None])[..., 0]
+        split_means = self._means[split_mask].expand(2, -1, -1).flatten(end_dim=1) + offsets
+        split_scales = split_scales.mul(0.625).log()  # 1 / 1.6 = 0.625
+        split_sh_coefficients_0 = self._sh_coefficients_0[split_mask].expand(2, -1, -1, -1).flatten(end_dim=1)
+        split_sh_coefficients_rest = self._sh_coefficients_rest[split_mask].expand(2, -1, -1, -1).flatten(end_dim=1)
+        split_opacities = self._opacities[split_mask].expand(2, -1, -1).flatten(end_dim=1)
+
+        # incorporate new gaussians
+        n_new_gaussians = n_new_gaussians_duplicate + n_new_gaussians_split
+        param_groups = extend_param_groups(self.optimizer, {
+            'means': torch.cat([duplicated_means, split_means]),
+            'sh_coefficients_0': torch.cat([duplicated_sh_coefficients_0, split_sh_coefficients_0]),
+            'sh_coefficients_rest': torch.cat([duplicated_sh_coefficients_rest, split_sh_coefficients_rest]),
+            'opacities': torch.cat([duplicated_opacities, split_opacities]),
+            'scales': torch.cat([duplicated_scales, split_scales]),
+            'rotations': torch.cat([duplicated_rotations, split_rotations])
+        })
+        self._means = param_groups['means']
+        self._sh_coefficients_0 = param_groups['sh_coefficients_0']
+        self._sh_coefficients_rest = param_groups['sh_coefficients_rest']
+        self._opacities = param_groups['opacities']
+        self._scales = param_groups['scales']
+        self._rotations = param_groups['rotations']
+
+        # densification info and 3d filter are no longer valid after parameter changes
+        self._densification_info = None
+        self._filter_3d = None
+
+        # prune: split parents + low-opacity + degenerate + (optionally) oversized
+        prune_mask = torch.cat([split_mask, torch.zeros(n_new_gaussians, dtype=torch.bool, device='cuda')])
+        prune_mask |= self._opacities.flatten() < math.log(min_opacity / (1 - min_opacity))
+        prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
+        if prune_large_gaussians:
+            prune_mask |= self._scales.max(dim=1).values > math.log(0.1 * self.training_cameras_extent)
+        self.prune(prune_mask)
+
+        return momentum_add
 
     def mcmc_densification(self, min_opacity: float, cap_max: int) -> None:
         """Relocates low-opacity/degenerate Gaussians and adds new ones up to a cap."""

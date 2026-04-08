@@ -11,8 +11,8 @@ from Datasets.utils import View
 from Logging import Logger
 from Methods.Base.Renderer import BaseModel
 from Methods.Base.Renderer import BaseRenderer
-from Methods.FasterGS.Model import FasterGSModel
-from Methods.FasterGS.FasterGSCudaBackend import diff_rasterize, rasterize, update_pruning_scores, RasterizerSettings
+from Methods.FasterGSDash.Model import FasterGSModel
+from Methods.FasterGSDash.FasterGSCudaBackend import diff_rasterize, rasterize, update_pruning_scores, RasterizerSettings
 
 
 def extract_settings(
@@ -20,6 +20,7 @@ def extract_settings(
     active_sh_bases: int,
     bg_color: torch.Tensor,
     proper_antialiasing: bool,
+    render_scale: int = 1,
 ) -> RasterizerSettings:
     if not isinstance(view.camera, PerspectiveCamera):
         raise Framework.RendererError('FasterGS renderer only supports perspective cameras')
@@ -30,12 +31,12 @@ def extract_settings(
         view.position,
         bg_color,
         active_sh_bases,
-        view.camera.width,
-        view.camera.height,
-        view.camera.focal_x,
-        view.camera.focal_y,
-        view.camera.center_x,
-        view.camera.center_y,
+        view.camera.width // render_scale,
+        view.camera.height // render_scale,
+        view.camera.focal_x / render_scale,
+        view.camera.focal_y / render_scale,
+        view.camera.center_x / render_scale,
+        view.camera.center_y / render_scale,
         view.camera.near_plane,
         view.camera.far_plane,
         proper_antialiasing,
@@ -66,8 +67,14 @@ class FasterGSRenderer(BaseRenderer):
         else:
             return self.render_image_inference(view, to_chw)
 
-    def render_image_training(self, view: View, update_densification_info: bool, bg_color: torch.Tensor) -> torch.Tensor:
-        """Renders an image for a given view."""
+    def render_image_training(
+        self,
+        view: View,
+        update_densification_info: bool,
+        bg_color: torch.Tensor,
+        render_scale: int = 1,
+    ) -> torch.Tensor:
+        """Renders an image for a given view, optionally at a downscaled resolution."""
         image = diff_rasterize(
             means=self.model.gaussians.means,
             scales=self.model.gaussians.raw_scales,
@@ -76,7 +83,10 @@ class FasterGSRenderer(BaseRenderer):
             sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
-            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.PROPER_ANTIALIASING),
+            rasterizer_settings=extract_settings(
+                view, self.model.gaussians.active_sh_bases, bg_color,
+                self.PROPER_ANTIALIASING, render_scale=render_scale,
+            ),
         )
         return image
 
