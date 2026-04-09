@@ -378,8 +378,11 @@ class Gaussians(torch.nn.Module):
         - Returns momentum_add: the number of Gaussians that exceeded the
           (scaled) threshold before budget capping, used to update P_fin.
         """
-        # conflict A fix: scale threshold proportionally to resolution reduction
-        effective_threshold = grad_threshold * (render_scale ** 2)
+        # No threshold scaling: CUDA analysis shows stored NDC gradients scale as
+        # render_scale (not render_scale²), so ×r² over-corrected 7× at scale=7,
+        # blocking all densification. DashGaussian itself applies no scaling —
+        # higher low-res gradients are intentional (they accelerate momentum growth).
+        effective_threshold = grad_threshold
 
         # mean gradient magnitude per Gaussian (lazy normalisation)
         mean_grads = self.densification_info[1] / self.densification_info[0].clamp_min(1.0)
