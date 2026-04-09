@@ -34,6 +34,8 @@ class TrainingScheduler:
         densify_mode: str,
         resolution_mode: str,
         original_images: list,
+        max_reso_scale: int = 8,
+        start_significance_factor: float = 4.0,
     ) -> None:
         """
         Args:
@@ -50,6 +52,12 @@ class TrainingScheduler:
                 "const" to keep full resolution throughout.
             original_images: list of training-view RGB tensors (C×H×W,
                 float32, on any device) used for FFT analysis.
+            max_reso_scale: hard upper bound on the FFT-computed initial downsampling
+                factor. Lowering this (e.g. 4) prevents extreme downsampling on
+                indoor scenes, making the early densify_rate budget less restrictive.
+            start_significance_factor: controls the FFT energy threshold that determines
+                max_reso_scale. e_min = e_total / factor; lower values (e.g. 2) yield
+                a smaller max_reso_scale for scenes with spread-out frequency content.
         """
         self.max_steps = max_steps
         self.init_n_gaussian = init_n_gaussian
@@ -58,8 +66,8 @@ class TrainingScheduler:
         self.densification_interval = densification_interval
         self.resolution_mode = resolution_mode
 
-        self.start_significance_factor = 4
-        self.max_reso_scale = 8
+        self.start_significance_factor = start_significance_factor
+        self.max_reso_scale = max_reso_scale
         self.reso_sample_num = 32  # must be >= 2
         self.max_densify_rate_per_step = 0.2
         self.reso_scales = None
@@ -215,7 +223,8 @@ class TrainingScheduler:
 
         print("[ INFO ] Initialising resolution scheduler (FFT analysis)...")
 
-        self.max_reso_scale = 8
+        # max_reso_scale was set in __init__ from the constructor argument;
+        # reset next_i but keep the configured cap.
         self.next_i = 2
         scene_freq_image = None
 

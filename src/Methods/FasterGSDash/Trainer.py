@@ -60,10 +60,12 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
     ),
     # ---- DashGaussian scheduling ----
     DASH=Framework.ConfigParameterList(
-        DENSIFY_MODE="freq",       # "freq" = scheduled top-k | "free" = standard ADC
-        RESOLUTION_MODE="freq",    # "freq" = FFT schedule    | "const" = full res always
-        MAX_N_GAUSSIANS=-1,        # -1 = momentum-adaptive; >0 = hard cap
-        INITIAL_MOMENTUM_FACTOR=5, # initial momentum = factor × init_n_gaussian
+        DENSIFY_MODE="freq",            # "freq" = scheduled top-k | "free" = standard ADC
+        RESOLUTION_MODE="freq",         # "freq" = FFT schedule    | "const" = full res always
+        MAX_N_GAUSSIANS=-1,             # -1 = momentum-adaptive; >0 = hard cap
+        INITIAL_MOMENTUM_FACTOR=5,      # initial momentum = factor × init_n_gaussian
+        MAX_RESO_SCALE=8,               # hard cap on FFT-computed initial downsampling factor
+        START_SIGNIFICANCE_FACTOR=4.0,  # FFT energy threshold: e_min = e_total / factor
     ),
 )
 class FasterGSTrainer(GuiTrainer):
@@ -123,6 +125,8 @@ class FasterGSTrainer(GuiTrainer):
             densify_mode=self.DASH.DENSIFY_MODE,
             resolution_mode=self.DASH.RESOLUTION_MODE,
             original_images=[view.rgb for view in dataset.train()],
+            max_reso_scale=self.DASH.MAX_RESO_SCALE,
+            start_significance_factor=self.DASH.START_SIGNIFICANCE_FACTOR,
         )
         self.current_render_scale = self.dash_scheduler.get_res_scale(1)
         Logger.log_info(f'DashGaussian scheduler ready — initial render_scale: {self.current_render_scale}')
