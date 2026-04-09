@@ -163,8 +163,9 @@ class Gaussians(torch.nn.Module):
         self.lr_means = self.lr_means_scheduler(iteration)
 
     def reset_opacities(self) -> None:
-        """Resets the opacities to a fixed value (moments preserved, matching DashGaussian)."""
+        """Resets the opacities to a fixed value."""
         self._opacities.clamp_max_(-4.595119953155518)  # sigmoid(-4.595119953155518) = 0.01
+        self.moments_opacities.zero_()
 
     def prune(self, prune_mask: torch.Tensor) -> None:
         """Prunes Gaussians that are not visible or too large."""
@@ -286,9 +287,9 @@ class Gaussians(torch.nn.Module):
         if pre_prune.any():
             self.prune(pre_prune)
 
-        # ② budget from post-prune count (matches DashGaussian formula)
+        # ② budget: use post-prune count × rate (conservative, avoids explosive growth)
         post_prune_n = self._means.shape[0]
-        n_budget = max(0, min(int(cur_n * (1 + densify_rate) - post_prune_n), post_prune_n))
+        n_budget = max(0, int(post_prune_n * densify_rate))
 
         # ③ mean gradient magnitude (densification_info already pruned by self.prune)
         mean_grads = self.densification_info[1] / self.densification_info[0].clamp_min(1.0)
