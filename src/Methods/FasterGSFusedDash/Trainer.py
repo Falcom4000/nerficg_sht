@@ -24,7 +24,6 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
     DENSIFICATION_PERCENT_DENSE=0.01,
     OPACITY_RESET_INTERVAL=3_000,
     EXTRA_OPACITY_RESET_ITERATION=500,
-    MORTON_ORDERING_INTERVAL=5000,
     MORTON_ORDERING_END_ITERATION=27_000,  # extended to match densification end
     MORTON_ORDERING_MIN_GAUSSIANS=50_000,  # conflict B fix: skip z-ordering when count is small
     USE_RANDOM_BACKGROUND_COLOR=False,
@@ -114,6 +113,7 @@ class FasterGSFusedDashTrainer(GuiTrainer):
             start_significance_factor=self.DASH.START_SIGNIFICANCE_FACTOR,
         )
         self.current_render_scale = self.dash_scheduler.get_res_scale(1)
+        self._last_morton_n = 0
         Logger.log_info(f'DashGaussian scheduler ready — initial render_scale: {self.current_render_scale}')
 
     @training_callback(priority=110, start_iteration=1000, iteration_stride=1000)
@@ -147,13 +147,17 @@ class FasterGSFusedDashTrainer(GuiTrainer):
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
 
-    @training_callback(priority=99, end_iteration='MORTON_ORDERING_END_ITERATION', iteration_stride='MORTON_ORDERING_INTERVAL')
+    @training_callback(priority=99, end_iteration='MORTON_ORDERING_END_ITERATION', iteration_stride='DENSIFICATION_INTERVAL')
     @torch.no_grad()
     def morton_ordering(self, *_) -> None:
-        """Apply Morton ordering, but skip when Gaussian count is too small (conflict B fix)."""
-        if self.model.gaussians.means.shape[0] < self.MORTON_ORDERING_MIN_GAUSSIANS:
+        """Apply Morton ordering adaptively: skip when count is small or growth < 20%."""
+        n = self.model.gaussians.means.shape[0]
+        if n < self.MORTON_ORDERING_MIN_GAUSSIANS:
+            return
+        if n < self._last_morton_n * 1.2:
             return
         self.model.gaussians.apply_morton_ordering()
+        self._last_morton_n = n
 
     @training_callback(priority=90, start_iteration='OPACITY_RESET_INTERVAL', end_iteration='DENSIFICATION_END_ITERATION', iteration_stride='OPACITY_RESET_INTERVAL')
     @torch.no_grad()
@@ -186,7 +190,8 @@ class FasterGSFusedDashTrainer(GuiTrainer):
         view = self.train_sampler.get(dataset=dataset)['view']
         bg_color = torch.rand_like(view.camera.background_color) if self.USE_RANDOM_BACKGROUND_COLOR else view.camera.background_color
 
-        render_scale = self.current_render_scale
+        render_scale = self.dash_scheduler.get_res_scale(iteration)
+        self.current_render_scale = render_scale
 
         # render at reduced resolution (Conflict G fix: scaled dims passed to CUDA via Renderer)
         image, autograd_dummy = self.renderer.render_image_training(

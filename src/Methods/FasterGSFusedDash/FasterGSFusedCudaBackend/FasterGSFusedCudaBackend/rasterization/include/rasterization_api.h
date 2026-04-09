@@ -64,6 +64,7 @@ namespace faster_gs::rasterization {
         const int adam_step_count,
         const int n_instances,
         const int n_buckets,
-        const int instance_primitive_indices_selector);
+        const int instance_primitive_indices_selector,
+        const bool apply_invisible_momentum = true);
 
 }

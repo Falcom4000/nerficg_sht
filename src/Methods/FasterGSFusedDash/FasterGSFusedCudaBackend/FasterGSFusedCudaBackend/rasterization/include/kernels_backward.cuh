@@ -49,8 +49,22 @@ namespace faster_gs::rasterization::kernels::backward {
         const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (primitive_idx >= n_primitives || primitive_n_touched_tiles[primitive_idx] == 0) return;
 
-        const float step_size_opacities = config::lr_opacities * bias_correction1_rcp;
-        adam_step_helper<1, 0>(grad_opacities[primitive_idx], opacities, moments_opacities, primitive_idx, step_size_opacities, bias_correction2_sqrt_rcp);
+        // Cold primitive detection: newly created Gaussians have all-zero moments.
+        // Use t=1 bias correction instead of the (much weaker) global-step correction
+        // to match PyTorch Adam's per-parameter step-count semantics and avoid the
+        // 3.16x first-step amplification for late-created Gaussians.
+        const float2 _cold_check = moments_means[primitive_idx * 3];
+        float eff_bc1_rcp = bias_correction1_rcp;
+        float eff_bc2_sqrt_rcp = bias_correction2_sqrt_rcp;
+        float eff_step_size_means = step_size_means;
+        if (_cold_check.x == 0.0f && _cold_check.y == 0.0f) {
+            eff_bc1_rcp = 1.0f / (1.0f - config::beta1);
+            eff_bc2_sqrt_rcp = rsqrtf(1.0f - config::beta2);
+            eff_step_size_means = (step_size_means / bias_correction1_rcp) * eff_bc1_rcp;
+        }
+
+        const float step_size_opacities = config::lr_opacities * eff_bc1_rcp;
+        adam_step_helper<1, 0>(grad_opacities[primitive_idx], opacities, moments_opacities, primitive_idx, step_size_opacities, eff_bc2_sqrt_rcp);
 
         // load 3d mean
         const float3 mean3d = means[primitive_idx];
@@ -62,7 +76,7 @@ namespace faster_gs::rasterization::kernels::backward {
             grad_colors,
             mean3d, cam_position[0], primitive_idx,
             active_sh_bases, total_sh_bases,
-            bias_correction1_rcp, bias_correction2_sqrt_rcp
+            eff_bc1_rcp, eff_bc2_sqrt_rcp
         );
 
         const float4 w2c_r3 = w2c[2];
@@ -208,9 +222,9 @@ namespace faster_gs::rasterization::kernels::backward {
 
         // meand3d gradient
         const float3 dL_dmean3d = dL_dmean3d_from_splatting + dL_dmean3d_from_color;
-        adam_step_helper<3, 0>(dL_dmean3d.x, reinterpret_cast<float*>(means), moments_means, primitive_idx, step_size_means, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 1>(dL_dmean3d.y, reinterpret_cast<float*>(means), moments_means, primitive_idx, step_size_means, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 2>(dL_dmean3d.z, reinterpret_cast<float*>(means), moments_means, primitive_idx, step_size_means, bias_correction2_sqrt_rcp);
+        adam_step_helper<3, 0>(dL_dmean3d.x, reinterpret_cast<float*>(means), moments_means, primitive_idx, eff_step_size_means, eff_bc2_sqrt_rcp);
+        adam_step_helper<3, 1>(dL_dmean3d.y, reinterpret_cast<float*>(means), moments_means, primitive_idx, eff_step_size_means, eff_bc2_sqrt_rcp);
+        adam_step_helper<3, 2>(dL_dmean3d.z, reinterpret_cast<float*>(means), moments_means, primitive_idx, eff_step_size_means, eff_bc2_sqrt_rcp);
 
         // scale gradient
         const float3 dL_dvariance = make_float3(
@@ -222,10 +236,10 @@ namespace faster_gs::rasterization::kernels::backward {
                 2.0f * (R.m13 * R.m23 * dL_dcov3d.m12 + R.m13 * R.m33 * dL_dcov3d.m13 + R.m23 * R.m33 * dL_dcov3d.m23)
         );
         const float3 dL_dscale = 2.0f * variance * dL_dvariance;
-        const float step_size_scales = config::lr_scales * bias_correction1_rcp;
-        adam_step_helper<3, 0>(dL_dscale.x, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 1>(dL_dscale.y, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 2>(dL_dscale.z, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, bias_correction2_sqrt_rcp);
+        const float step_size_scales = config::lr_scales * eff_bc1_rcp;
+        adam_step_helper<3, 0>(dL_dscale.x, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, eff_bc2_sqrt_rcp);
+        adam_step_helper<3, 1>(dL_dscale.y, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, eff_bc2_sqrt_rcp);
+        adam_step_helper<3, 2>(dL_dscale.z, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, eff_bc2_sqrt_rcp);
 
         // rotation gradient
         const mat3x3 dL_dR = {
@@ -240,11 +254,11 @@ namespace faster_gs::rasterization::kernels::backward {
             2.0f * (RSS.m13 * dL_dcov3d.m13 + RSS.m23 * dL_dcov3d.m23 + RSS.m33 * dL_dcov3d.m33)
         };
         const float4 dL_drotation = convert_quaternion_to_rotation_matrix_backward(raw_rotation, dL_dR);
-        const float step_size_rotations = config::lr_rotations * bias_correction1_rcp;
-        adam_step_helper<4, 0>(dL_drotation.x, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
-        adam_step_helper<4, 1>(dL_drotation.y, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
-        adam_step_helper<4, 2>(dL_drotation.z, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
-        adam_step_helper<4, 3>(dL_drotation.w, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
+        const float step_size_rotations = config::lr_rotations * eff_bc1_rcp;
+        adam_step_helper<4, 0>(dL_drotation.x, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, eff_bc2_sqrt_rcp);
+        adam_step_helper<4, 1>(dL_drotation.y, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, eff_bc2_sqrt_rcp);
+        adam_step_helper<4, 2>(dL_drotation.z, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, eff_bc2_sqrt_rcp);
+        adam_step_helper<4, 3>(dL_drotation.w, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, eff_bc2_sqrt_rcp);
 
     }
 

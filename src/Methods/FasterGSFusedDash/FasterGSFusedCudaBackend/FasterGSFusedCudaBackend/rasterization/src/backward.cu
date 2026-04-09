@@ -46,7 +46,8 @@ void faster_gs::rasterization::backward(
     const float center_x,
     const float center_y,
     const float current_mean_lr,
-    const int adam_step_count)
+    const int adam_step_count,
+    const bool apply_invisible_momentum)
 {
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
     const int n_tiles = grid.x * grid.y;
@@ -125,83 +126,85 @@ void faster_gs::rasterization::backward(
     );
     CHECK_CUDA(config::debug, "preprocess_backward")
 
-    const int n_elements_means = n_primitives * 3;
-    kernels::backward::adam_step_invisible<3><<<div_round_up(n_elements_means, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-        primitive_buffers.n_touched_tiles,
-        reinterpret_cast<float*>(means),
-        moments_means,
-        n_elements_means,
-        step_size_means,
-        bias_correction2_sqrt_rcp
-    );
-    CHECK_CUDA(config::debug, "adam_step_invisible (means)")
-
-    const float step_size_scales = config::lr_scales * bias_correction1_rcp;
-    const int n_elements_scales = n_primitives * 3;
-    kernels::backward::adam_step_invisible<3><<<div_round_up(n_elements_scales, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-        primitive_buffers.n_touched_tiles,
-        reinterpret_cast<float*>(scales),
-        moments_scales,
-        n_elements_scales,
-        step_size_scales,
-        bias_correction2_sqrt_rcp
-    );
-    CHECK_CUDA(config::debug, "adam_step_invisible (scales)")
-
-    const float step_size_rotations = config::lr_rotations * bias_correction1_rcp;
-    const int n_elements_rotations = n_primitives * 4;
-    kernels::backward::adam_step_invisible<4><<<div_round_up(n_elements_rotations, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-        primitive_buffers.n_touched_tiles,
-        reinterpret_cast<float*>(rotations),
-        moments_rotations,
-        n_elements_rotations,
-        step_size_rotations,
-        bias_correction2_sqrt_rcp
-    );
-    CHECK_CUDA(config::debug, "adam_step_invisible (rotations)")
-
-    const float step_size_opacities = config::lr_opacities * bias_correction1_rcp;
-    const int n_elements_opacities = n_primitives;
-    kernels::backward::adam_step_invisible<1><<<div_round_up(n_elements_opacities, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-        primitive_buffers.n_touched_tiles,
-        opacities,
-        moments_opacities,
-        n_elements_opacities,
-        step_size_opacities,
-        bias_correction2_sqrt_rcp
-    );
-    CHECK_CUDA(config::debug, "adam_step_invisible (opacities)")
-
-    const float step_size_sh_coefficients_0 = config::lr_sh_coefficients_0 * bias_correction1_rcp;
-    const int n_elements_sh_coefficients_0 = n_primitives * 3;
-    kernels::backward::adam_step_invisible<3><<<div_round_up(n_elements_sh_coefficients_0, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-        primitive_buffers.n_touched_tiles,
-        reinterpret_cast<float*>(sh_coefficients_0),
-        moments_sh_coefficients_0,
-        n_elements_sh_coefficients_0,
-        step_size_sh_coefficients_0,
-        bias_correction2_sqrt_rcp
-    );
-    CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_0)");
-
-    if (active_sh_bases <= 1) return;
-
-    if (total_sh_bases != config::n_sh_bases_rest)
-        throw std::runtime_error(
-            "The number of SH bases does not match \"n_sh_bases_rest\" constant. Please modify \"rasterization_config.h\" and recompile the rasterizer."
+    if (apply_invisible_momentum) {
+        const int n_elements_means = n_primitives * 3;
+        kernels::backward::adam_step_invisible<3><<<div_round_up(n_elements_means, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles,
+            reinterpret_cast<float*>(means),
+            moments_means,
+            n_elements_means,
+            step_size_means,
+            bias_correction2_sqrt_rcp
         );
+        CHECK_CUDA(config::debug, "adam_step_invisible (means)")
 
-    const float step_size_sh_coefficients_rest = config::lr_sh_coefficients_rest * bias_correction1_rcp;
-    constexpr int elements_per_primitive_sh_coefficients_rest = config::n_sh_bases_rest * 3; // TODO: make this dynamic
-    const int n_elements_sh_coefficients_rest = n_primitives * elements_per_primitive_sh_coefficients_rest;
-    kernels::backward::adam_step_invisible<elements_per_primitive_sh_coefficients_rest><<<div_round_up(n_elements_sh_coefficients_rest, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-        primitive_buffers.n_touched_tiles,
-        reinterpret_cast<float*>(sh_coefficients_rest),
-        moments_sh_coefficients_rest,
-        n_elements_sh_coefficients_rest,
-        step_size_sh_coefficients_rest,
-        bias_correction2_sqrt_rcp
-    );
-    CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_rest)")
+        const float step_size_scales = config::lr_scales * bias_correction1_rcp;
+        const int n_elements_scales = n_primitives * 3;
+        kernels::backward::adam_step_invisible<3><<<div_round_up(n_elements_scales, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles,
+            reinterpret_cast<float*>(scales),
+            moments_scales,
+            n_elements_scales,
+            step_size_scales,
+            bias_correction2_sqrt_rcp
+        );
+        CHECK_CUDA(config::debug, "adam_step_invisible (scales)")
+
+        const float step_size_rotations = config::lr_rotations * bias_correction1_rcp;
+        const int n_elements_rotations = n_primitives * 4;
+        kernels::backward::adam_step_invisible<4><<<div_round_up(n_elements_rotations, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles,
+            reinterpret_cast<float*>(rotations),
+            moments_rotations,
+            n_elements_rotations,
+            step_size_rotations,
+            bias_correction2_sqrt_rcp
+        );
+        CHECK_CUDA(config::debug, "adam_step_invisible (rotations)")
+
+        const float step_size_opacities = config::lr_opacities * bias_correction1_rcp;
+        const int n_elements_opacities = n_primitives;
+        kernels::backward::adam_step_invisible<1><<<div_round_up(n_elements_opacities, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles,
+            opacities,
+            moments_opacities,
+            n_elements_opacities,
+            step_size_opacities,
+            bias_correction2_sqrt_rcp
+        );
+        CHECK_CUDA(config::debug, "adam_step_invisible (opacities)")
+
+        const float step_size_sh_coefficients_0 = config::lr_sh_coefficients_0 * bias_correction1_rcp;
+        const int n_elements_sh_coefficients_0 = n_primitives * 3;
+        kernels::backward::adam_step_invisible<3><<<div_round_up(n_elements_sh_coefficients_0, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles,
+            reinterpret_cast<float*>(sh_coefficients_0),
+            moments_sh_coefficients_0,
+            n_elements_sh_coefficients_0,
+            step_size_sh_coefficients_0,
+            bias_correction2_sqrt_rcp
+        );
+        CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_0)");
+
+        if (active_sh_bases <= 1) return;
+
+        if (total_sh_bases != config::n_sh_bases_rest)
+            throw std::runtime_error(
+                "The number of SH bases does not match \"n_sh_bases_rest\" constant. Please modify \"rasterization_config.h\" and recompile the rasterizer."
+            );
+
+        const float step_size_sh_coefficients_rest = config::lr_sh_coefficients_rest * bias_correction1_rcp;
+        constexpr int elements_per_primitive_sh_coefficients_rest = config::n_sh_bases_rest * 3; // TODO: make this dynamic
+        const int n_elements_sh_coefficients_rest = n_primitives * elements_per_primitive_sh_coefficients_rest;
+        kernels::backward::adam_step_invisible<elements_per_primitive_sh_coefficients_rest><<<div_round_up(n_elements_sh_coefficients_rest, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles,
+            reinterpret_cast<float*>(sh_coefficients_rest),
+            moments_sh_coefficients_rest,
+            n_elements_sh_coefficients_rest,
+            step_size_sh_coefficients_rest,
+            bias_correction2_sqrt_rcp
+        );
+        CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_rest)")
+    }
 
 }

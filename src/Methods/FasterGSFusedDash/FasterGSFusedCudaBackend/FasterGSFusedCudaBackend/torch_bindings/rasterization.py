@@ -59,6 +59,7 @@ class _Rasterize(torch.autograd.Function):
         moments_sh_coefficients_rest: torch.Tensor,
         densification_info: torch.Tensor,
         rasterizer_settings: RasterizerSettings,
+        apply_invisible_momentum: bool,
     ) -> 'tuple[torch.Tensor, torch.Tensor]':
         (
             image,
@@ -74,6 +75,7 @@ class _Rasterize(torch.autograd.Function):
             *rasterizer_settings.as_tuple(),
         )
         ctx.rasterizer_settings = rasterizer_settings
+        ctx.apply_invisible_momentum = apply_invisible_momentum
         ctx.buffer_state = (n_instances, n_buckets, instance_primitive_indices_selector)
         ctx.save_for_backward(
             image,
@@ -116,7 +118,7 @@ class _Rasterize(torch.autograd.Function):
         ctx: Any,
         grad_image: torch.Tensor,
         _,
-    ) -> 'tuple[None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]':
+    ) -> 'tuple[None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]':
         _C.backward(
             ctx.densification_info,
             ctx.means,
@@ -135,6 +137,7 @@ class _Rasterize(torch.autograd.Function):
             *ctx.saved_tensors,
             *ctx.rasterizer_settings.as_tuple(),
             *ctx.buffer_state,
+            ctx.apply_invisible_momentum,
         )
         return (
             None,  # autograd_dummy
@@ -152,6 +155,7 @@ class _Rasterize(torch.autograd.Function):
             None,  # moments_sh_coefficients_rest
             None,  # densification_info
             None,  # rasterizer_settings
+            None,  # apply_invisible_momentum
         )
 
 
@@ -171,6 +175,7 @@ def diff_rasterize(
     moments_opacities: torch.Tensor = None,
     moments_sh_coefficients_0: torch.Tensor = None,
     moments_sh_coefficients_rest: torch.Tensor = None,
+    apply_invisible_momentum: bool = True,
 ) -> torch.Tensor:
     return _Rasterize.apply(
         autograd_dummy,
@@ -188,4 +193,5 @@ def diff_rasterize(
         torch.empty(0) if moments_sh_coefficients_rest is None else moments_sh_coefficients_rest,
         densification_info,
         rasterizer_settings,
+        apply_invisible_momentum,
     )

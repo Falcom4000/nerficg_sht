@@ -11,7 +11,7 @@ from Logging import Logger
 from Methods.Base.Renderer import BaseModel
 from Methods.Base.Renderer import BaseRenderer
 from Methods.FasterGSFusedDash.Model import FasterGSFusedDashModel
-from Methods.FasterGSFused.FasterGSFusedCudaBackend import diff_rasterize, RasterizerSettings
+from Methods.FasterGSFusedDash.FasterGSFusedCudaBackend import diff_rasterize, RasterizerSettings
 
 
 def extract_settings(

@@ -124,7 +124,8 @@ void faster_gs::rasterization::backward_wrapper(
     const int adam_step_count,
     const int n_instances,
     const int n_buckets,
-    const int instance_primitive_indices_selector)
+    const int instance_primitive_indices_selector,
+    const bool apply_invisible_momentum)
 {
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
@@ -176,7 +177,8 @@ void faster_gs::rasterization::backward_wrapper(
         center_x,
         center_y,
         current_mean_lr,
-        adam_step_count
+        adam_step_count,
+        apply_invisible_momentum
     );
 
 }
