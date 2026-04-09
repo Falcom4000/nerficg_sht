@@ -156,7 +156,6 @@ class FasterGSTrainer(GuiTrainer):
             self.dash_scheduler.update_momentum(momentum_add)
             # update render_scale after densification (mirrors DashGaussian train_dash.py)
             self.current_render_scale = self.dash_scheduler.get_res_scale(iteration)
-
             if iteration < self.DENSIFICATION_END_ITERATION:
                 self.model.gaussians.reset_densification_info()
 

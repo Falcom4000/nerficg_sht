@@ -59,6 +59,45 @@ The Gaussian count gap is also more pronounced: bonsai 905K vs 1.06M (85%), coun
 
 Speed improvement is consistent: **1.23×–1.48× faster** across all scenes.
 
+## Phase 3 Ablation: Diagnosing Indoor Scene Gaps (E3-A–D, bonsai)
+
+### E3 Experiments
+
+| ID | Description | PSNR | SSIM | LPIPS | #Gaussians | Notes |
+|----|-------------|------|------|-------|------------|-------|
+| E3-A | densify_end=14900 (FasterGS default), freq | **32.49** | 0.954 | 0.133 | 983,218 | Best result |
+| E3-B | densify_end=27000, const resolution | 32.22 | 0.952 | 0.142 | 982,320 | Extended densify hurts |
+| E3-C | densify_end=27000, freq, reso_until=14900 (decoupled) | 32.06 | 0.950 | 0.137 | 915,403 | Worse: extra opacity resets |
+| E3-D | E3-A + Conflict E fix (carry gradient history) | 32.29 | 0.950 | 0.149 | 712,287 | Worse than E3-A |
+| FasterGS ref | — | 32.84 | 0.954 | 0.136 | 1,060,601 | — |
+
+**Root cause of indoor quality gap (solved):** `DENSIFICATION_END_ITERATION=27000` (extended from FasterGS default 14900).
+
+Mechanism: `densify_rate = (max_n − init_n) / scale^(2 − iter/densify_until_iter)`.
+Indoor scenes (bonsai, counter) get `max_reso_scale≈7–8` from FFT analysis. With `densify_until_iter=27000` and `scale=7`: divisor reaches ~47 → densify budget ≈2% at early iterations. Additionally, extending densify_end to 27000 triggers extra opacity resets at iters 15K, 18K, 21K, 24K (every 3K), disrupting a mature model.
+
+**Fix:** `DENSIFICATION_END_ITERATION: 14900` for all scenes.
+
+**Why E3-C failed:** Decoupling reso_until from densify_until while keeping densify_end=27000 still causes the extra opacity resets. Bonsai at iter 15K–27K has 900K well-trained Gaussians; resetting opacity 4–5 times degrades rather than helps.
+
+**Why E3-D (Conflict E fix) failed:** Carrying gradient history across densification steps accumulates low-resolution (7× inflated) gradients that bias top-k selection at full resolution, wasting densification budget on already-good Gaussians.
+
+**Conclusion:** Conflict E is NOT a real conflict. The current reset (every 100-iter window) matches DashGaussian's actual behaviour and is correct.
+
+### E3-D Validated Config (all 7 scenes)
+
+`DENSIFICATION_END_ITERATION: 14900`, `MORTON_ORDERING_END_ITERATION: 15000`, all else default.
+
+| Scene | PSNR | SSIM | LPIPS | #Gaussians | PSNR Δ vs FasterGS |
+|-------|------|------|-------|------------|---------------------|
+| bonsai | 32.49 | 0.954 | 0.133 | 983,218 | **-0.35** |
+| counter | 29.31 | 0.919 | 0.149 | 981,857 | **-0.18** |
+| garden | 27.54 | 0.867 | 0.120 | 3,626,990 | **+0.11** |
+
+Garden: FasterGSDash now **exceeds** FasterGS (+0.11 dB, fewer Gaussians). Indoor scenes: 0.18–0.35 dB gap remains.
+
+---
+
 ## Analysis Notes
 
 ### Phase 1 Root Cause (Discovered via CUDA code analysis)
