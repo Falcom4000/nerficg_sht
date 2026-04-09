@@ -17,8 +17,8 @@ Framework: NeRFICG
 | ID | Description | Time | PSNR | SSIM | LPIPS | #Gaussians | VRAM (alloc/reserved) | Config delta |
 |----|-------------|------|------|------|-------|------------|----------------------|--------------|
 | E2-A | Remove r² threshold scaling (root cause fix) + factor=15 | ~4:30 | **25.12** | **0.748** | **0.284** | **3,319,051** | 3.83/4.83 GiB | Model.py: effective_threshold=grad_threshold |
-| E2-B | E2-A + LR decay from lr_decay_from_iter (Conflict J) | — | — | — | — | — | — | Trainer.py LR offset |
-| E2-C | E2-A + MAX_N_GAUSSIANS=5M (isolate Gaussian count effect) | — | — | — | — | — | — | MAX_N_GAUSSIANS: 5000000 |
+| E2-B | E2-A + LR decay from lr_decay_from_iter (Conflict J) | ~4:30 | **25.22** | **0.773** | **0.216** | **5,094,230** | 5.87/7.92 GiB | Trainer.py LR offset |
+| E2-C | E2-A+E2-B + MAX_N_GAUSSIANS=5M (cap experiment) | — | — | — | — | — | — | MAX_N_GAUSSIANS: 5000000 |
 
 ## Analysis Notes
 
@@ -34,7 +34,13 @@ Framework: NeRFICG
 - Removing r² scaling: **+0.85 dB PSNR** (24.27 → 25.12), Gaussians 2.15M → 3.32M
 - Still -0.18 dB below FasterGS (25.30). Gaussian gap: 3.32M vs 4.8M (69%)
 - VRAM lower than FasterGS (3.83 vs 5.34 GiB) due to fewer Gaussians
-- Speed still ~4:30 vs 7:46 FasterGS ≈ 1.7× faster
+
+### E2-B Findings (E2-A + LR decay fix)
+- LR fix adds another +0.10 dB PSNR, +0.025 SSIM, **-0.068 LPIPS** (huge LPIPS improvement!)
+- Gaussians: 3.32M → **5.09M** (now exceeds FasterGS 4.8M by 6%)
+- SSIM **0.773 > FasterGS 0.767** ✓, LPIPS **0.216 < FasterGS 0.231** ✓
+- Only PSNR still slightly below: 25.22 vs 25.30 (-0.08 dB)
+- Speed ~4:30 vs FasterGS 7:46 ≈ **1.7× faster** while matching/exceeding quality
 
 ### Phase 1 Other Findings
 - SH unlock threshold change (scale<2 → scale<4) only improved by +0.09 dB
