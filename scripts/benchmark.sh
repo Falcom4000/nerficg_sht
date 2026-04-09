@@ -89,8 +89,8 @@ if [[ ! -f "$RESULTS_FILE" ]]; then
     cat > "$RESULTS_FILE" << 'HEADER'
 # Benchmark Results
 
-| Date | Method | Scene | Run | PSNR | SSIM | LPIPS | Time (s) | VRAM alloc (GiB) | VRAM resv (GiB) | Gaussians |
-|------|--------|-------|-----|------|------|-------|----------|-----------------|-----------------|-----------|
+| Date | Version | Commit | Method | Scene | Run | PSNR | SSIM | LPIPS | Time (s) | VRAM alloc (GiB) | VRAM resv (GiB) | Gaussians |
+|------|---------|--------|--------|-------|-----|------|------|-------|----------|-----------------|-----------------|-----------|
 HEADER
 fi
 
@@ -218,8 +218,9 @@ for ((i=0; i<TOTAL; i++)); do
 
     # append to results
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-    printf "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n" \
-        "$TIMESTAMP" "$display" "$scene" "$rep" \
+    GIT_COMMIT=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "?")
+    printf "| %s | — | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n" \
+        "$TIMESTAMP" "$GIT_COMMIT" "$display" "$scene" "$rep" \
         "$PSNR" "$SSIM" "$LPIPS" \
         "$ELAPSED" "$VRAM_ALLOC" "$VRAM_RESV" "$N_GAUSS" \
         >> "$RESULTS_FILE"
