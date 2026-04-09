@@ -1,0 +1,7 @@
+from Methods.FasterGSFusedDash.Model import FasterGSFusedDashModel
+from Methods.FasterGSFusedDash.Renderer import FasterGSFusedDashRenderer
+from Methods.FasterGSFusedDash.Trainer import FasterGSFusedDashTrainer
+
+MODEL = FasterGSFusedDashModel
+RENDERER = FasterGSFusedDashRenderer
+TRAINING_INSTANCE = FasterGSFusedDashTrainer
