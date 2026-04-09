@@ -201,7 +201,12 @@ class FasterGSTrainer(GuiTrainer):
         self.model.train()
         dataset.train()
         self.loss.train()
-        self.model.gaussians.update_learning_rate(iteration + 1)
+        # Conflict J fix: delay LR decay until near-full-resolution training.
+        # Without this, position LR decays from iter 1 even while training at
+        # low resolution (render_scale ≫ 1), starving mean positions of LR
+        # during the phase when scene structure needs to form.
+        lr_iter = max(1, iteration - self.dash_scheduler.lr_decay_from_iter() + 1)
+        self.model.gaussians.update_learning_rate(lr_iter)
 
         view = self.train_sampler.get(dataset=dataset)['view']
         bg_color = torch.rand_like(view.camera.background_color) if self.USE_RANDOM_BACKGROUND_COLOR else view.camera.background_color
