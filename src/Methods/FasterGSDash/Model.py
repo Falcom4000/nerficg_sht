@@ -368,15 +368,17 @@ class Gaussians(torch.nn.Module):
         render_scale: int,
         densify_rate: float,
     ) -> int:
-        """DashGaussian-style densification with resolution-aware threshold and top-k budget.
+        """DashGaussian-style densification with top-k primitive budget.
 
         Differences from adaptive_density_control:
-        - grad_threshold is scaled by render_scale² to compensate for the
-          lower gradient magnitudes produced at reduced resolution (conflict A fix).
+        - grad_threshold is applied without render_scale scaling (conflict A fix).
+          CUDA analysis shows stored NDC gradients scale as render_scale (linear),
+          not render_scale²; applying ×r² over-suppresses by 7× at scale=7.
+          Higher low-res gradients are intentional — they drive momentum growth.
         - A top-k selection limits total new Gaussians to densify_rate × N,
           so primitive growth follows the DashGaussian schedule.
         - Returns momentum_add: the number of Gaussians that exceeded the
-          (scaled) threshold before budget capping, used to update P_fin.
+          threshold before budget capping, used to update P_fin.
         """
         # No threshold scaling: CUDA analysis shows stored NDC gradients scale as
         # render_scale (not render_scale²), so ×r² over-corrected 7× at scale=7,
