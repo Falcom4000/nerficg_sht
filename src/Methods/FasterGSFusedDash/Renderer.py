@@ -82,6 +82,9 @@ class FasterGSFusedDashRenderer(BaseRenderer):
             autograd_dummy=autograd_dummy,
             densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.model.gaussians.lr_means, adam_step_count, render_scale=render_scale),
+            # Conflict H fix: at reduced resolution, Gaussians visible at full res may have
+            # zero touched tiles — suppressing their momentum-based updates prevents drift.
+            apply_invisible_momentum=(render_scale == 1),
         )
         return image, autograd_dummy
 
