@@ -99,7 +99,7 @@ TRAINING:
         DENSIFY_MODE: freq
         RESOLUTION_MODE: freq
         MAX_N_GAUSSIANS: -1
-        INITIAL_MOMENTUM_FACTOR: 15
+        INITIAL_MOMENTUM_FACTOR: 5
 DATASET:
     PATH: dataset/mipnerf360/bicycle
     IMAGE_SCALE_FACTOR: 0.25
