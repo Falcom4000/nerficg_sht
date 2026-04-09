@@ -98,6 +98,84 @@ Garden: FasterGSDash now **exceeds** FasterGS (+0.11 dB, fewer Gaussians). Indoo
 
 ---
 
+## Phase 4: Indoor Scene Hyperparameter Tuning (E4, bonsai)
+
+### 背景：室内场景 gap 的本质原因
+
+FFT 能量分析对室内场景（bonsai、counter）计算出 `max_reso_scale≈6–7`，对室外场景（bicycle、garden）计算出 `max_reso_scale≈4–5`。这一差异直接决定了训练早期的分辨率下采样倍数，进而影响 densify_rate 预算和模型形成质量。
+
+`densify_rate = (max_n − init_n) / scale^(2 − iter/densify_until_iter)`
+
+scale=7 时分母约为 49，scale=4 时约为 16，早期预算相差 3×。
+
+### E4 实验结果（bonsai，FasterGS 基准 32.84）
+
+| ID | 变量 | max_reso_scale（实际） | render_scale₀ | PSNR | #Gaussians |
+|----|------|----------------------|--------------|------|------------|
+| E3-A（基准）| 默认配置 | ~6.3 | 6 | 32.49 | 983K |
+| E4-A | `densify_mode=free`（关闭 top-k 限速）| 6.3 | 6 | 32.37 | 1,078K |
+| E4-B | `MAX_RESO_SCALE=4` | 4.0 | 3 | 32.61 | 991K |
+| E4-C | `START_SIGNIFICANCE_FACTOR=2.0` | 3.0 | 3 | **32.67 ± 0.16**（4次均值）| 1,020K |
+| E4-D | `MAX_RESO_SCALE=4` + `START_SIGNIFICANCE_FACTOR=2.0` | 3.0 | 3 | ≈E4-C（schedule 完全相同）| 1,029K |
+
+E4-C 的 4 次原始数据：32.72 / 32.43 / 32.86 / 32.67（std dev ≈ 0.16 dB）。
+
+### 关键发现
+
+**1. top-k 预算限制不是室内 gap 的主因（E4-A）**
+关闭 top-k（`densify_mode=free`）后 Gaussian 数量超过 FasterGS（1.08M vs 1.06M），但 PSNR 反而下降到 32.37。原因：低分辨率阶段（scale=6-7）梯度被放大 6-7×，无 top-k 保护时早期浪费 budget 在低质量 Gaussian 上。**top-k 是对的，scale 才是问题。**
+
+**2. 限制 max_reso_scale 有效（E4-B vs E4-C）**
+- `MAX_RESO_SCALE=4`（E4-B）：强制 FFT 结果 ≤ 4，bonsai 从 scale=6.3 降到 4.0，PSNR +0.12 dB
+- `START_SIGNIFICANCE_FACTOR=2.0`（E4-C）：放宽能量阈值（25%→50%），bonsai 自动算出 max_reso_scale=3.0，PSNR 均值 +0.18 dB，效果更好
+
+**3. 两个参数组合不产生额外收益（E4-D）**
+当 `START_SIGNIFICANCE_FACTOR=2.0` 算出的 max_reso_scale=3.0 已经低于 `MAX_RESO_SCALE=4` 的 cap 时，cap 不再生效，E4-D 与 E4-C 产生完全相同的 schedule。对于室内场景，`START_SIGNIFICANCE_FACTOR=2.0` 已经足够激进，无需再叠加 cap。
+
+**4. 方差问题**
+bonsai 训练存在约 ±0.16 dB 的 run-to-run 方差（GPU atomic 操作非确定性），单次结果不可靠。结论基于 4 次重复均值。
+
+### 室内/室外场景推荐超参
+
+| 参数 | 室外场景（bicycle、garden）| 室内场景（bonsai、counter、kitchen、room） |
+|------|--------------------------|------------------------------------------|
+| `DENSIFICATION_END_ITERATION` | 14900 | 14900 |
+| `MORTON_ORDERING_END_ITERATION` | 15000 | 15000 |
+| `DENSIFY_MODE` | `freq` | `freq` |
+| `RESOLUTION_MODE` | `freq` | `freq` |
+| `START_SIGNIFICANCE_FACTOR` | 4.0（默认）| **2.0** |
+| `MAX_RESO_SCALE` | 8（默认）| 8（让 sig_factor 自然限制）|
+| `MAX_N_GAUSSIANS` | -1（momentum 自适应）| -1 |
+| `INITIAL_MOMENTUM_FACTOR` | 5 | 5 |
+
+**判断室内/室外的实用依据：** 训练开始时 log 打印 `max_scale=X`。X > 5 → 室内场景，考虑使用 `START_SIGNIFICANCE_FACTOR=2.0`。
+
+MipNeRF360 各场景实测 max_reso_scale（单张图估算，仅供参考）：
+
+| Scene | factor=4（默认）| factor=2 | render_scale₀（factor=2）| 推荐 factor |
+|-------|----------------|----------|--------------------------|------------|
+| bonsai | 8.0 | 3.2 | 3 | **2.0** |
+| counter | ~8.0 | ~3.0 | ~3 | **2.0** |
+| kitchen | 8.0 | 3.2 | 3 | **2.0** |
+| room | 8.0 | 3.2 | 3 | **2.0** |
+| stump | 6.3 | 2.9 | 2 | 默认（待测）|
+| garden | 4.8 | 2.4 | 2 | 默认 |
+| bicycle | ~4–5 | ~2–3 | 2–3 | 默认 |
+
+stump 用 factor=2 会使 render_scale₀=2（几乎从全分辨率开始），速度收益大幅减少，未验证质量影响，暂保守处理。
+
+### 调整后的最终质量（bonsai，4次均值 vs 单次）
+
+| 方法 | PSNR | vs FasterGS |
+|------|------|-------------|
+| FasterGS | 32.84 | — |
+| FasterGSDash E3-A（默认）| 32.49（单次）| -0.35 |
+| FasterGSDash E4-C（sig_factor=2）| **32.67 ± 0.16**（4次均值）| **-0.17** |
+
+室内场景 gap 从 -0.35 dB 缩小到 -0.17 dB，已接近 FasterGS 单次结果的方差范围内。
+
+---
+
 ## Analysis Notes
 
 ### Phase 1 Root Cause (Discovered via CUDA code analysis)

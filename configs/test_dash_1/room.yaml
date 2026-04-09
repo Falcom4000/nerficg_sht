@@ -100,6 +100,7 @@ TRAINING:
         RESOLUTION_MODE: freq
         MAX_N_GAUSSIANS: -1
         INITIAL_MOMENTUM_FACTOR: 5
+        START_SIGNIFICANCE_FACTOR: 2.0  # indoor scene: reduces max_reso_scale from ~8 to ~3
 DATASET:
     PATH: dataset/mipnerf360/room
     IMAGE_SCALE_FACTOR: 0.25
