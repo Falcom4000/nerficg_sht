@@ -4,6 +4,10 @@ setup.py
 /root/codes/nerficg/src/Methods/FasterGSFused/FasterGSFusedCudaBackend/FasterGSFusedCudaBackend/rasterization/src/forward.cu
 /root/codes/nerficg/src/Methods/FasterGSFused/FasterGSFusedCudaBackend/FasterGSFusedCudaBackend/rasterization/src/rasterization_api.cu
 /root/codes/nerficg/src/Methods/FasterGSFused/FasterGSFusedCudaBackend/FasterGSFusedCudaBackend/torch_bindings/bindings.cpp
+/root/codes/nerficg/src/Methods/FasterGSFusedDash/FasterGSFusedCudaBackend/FasterGSFusedCudaBackend/rasterization/src/backward.cu
+/root/codes/nerficg/src/Methods/FasterGSFusedDash/FasterGSFusedCudaBackend/FasterGSFusedCudaBackend/rasterization/src/forward.cu
+/root/codes/nerficg/src/Methods/FasterGSFusedDash/FasterGSFusedCudaBackend/FasterGSFusedCudaBackend/rasterization/src/rasterization_api.cu
+/root/codes/nerficg/src/Methods/FasterGSFusedDash/FasterGSFusedCudaBackend/FasterGSFusedCudaBackend/torch_bindings/bindings.cpp
 FasterGSFusedCudaBackend.egg-info/PKG-INFO
 FasterGSFusedCudaBackend.egg-info/SOURCES.txt
 FasterGSFusedCudaBackend.egg-info/dependency_links.txt

@@ -205,6 +205,17 @@ void faster_gs::rasterization::backward(
             bias_correction2_sqrt_rcp
         );
         CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_rest)")
+    } else {
+        // Decay-only: reduce stale moments without moving parameters.
+        kernels::backward::decay_invisible_moments<3><<<div_round_up(n_primitives*3, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(primitive_buffers.n_touched_tiles, moments_means, n_primitives*3);
+        kernels::backward::decay_invisible_moments<3><<<div_round_up(n_primitives*3, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(primitive_buffers.n_touched_tiles, moments_scales, n_primitives*3);
+        kernels::backward::decay_invisible_moments<4><<<div_round_up(n_primitives*4, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(primitive_buffers.n_touched_tiles, moments_rotations, n_primitives*4);
+        kernels::backward::decay_invisible_moments<1><<<div_round_up(n_primitives, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(primitive_buffers.n_touched_tiles, moments_opacities, n_primitives);
+        kernels::backward::decay_invisible_moments<3><<<div_round_up(n_primitives*3, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(primitive_buffers.n_touched_tiles, reinterpret_cast<float2*>(sh_coefficients_0), n_primitives*3);
+        if (active_sh_bases > 1) {
+            constexpr int elems_sh_rest = config::n_sh_bases_rest * 3;
+            kernels::backward::decay_invisible_moments<elems_sh_rest><<<div_round_up(n_primitives*elems_sh_rest, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(primitive_buffers.n_touched_tiles, moments_sh_coefficients_rest, n_primitives*elems_sh_rest);
+        }
     }
 
 }
