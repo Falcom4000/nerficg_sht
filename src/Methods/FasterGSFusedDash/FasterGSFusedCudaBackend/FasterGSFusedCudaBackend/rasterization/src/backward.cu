@@ -205,36 +205,6 @@ void faster_gs::rasterization::backward(
             bias_correction2_sqrt_rcp
         );
         CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_rest)")
-    } else {
-        // Decay-only mode: reduce stale moments without moving parameters.
-        // Prevents frozen momentum from mis-directing Gaussians when
-        // resolution ramps back up to full.
-        const int n_elements_means = n_primitives * 3;
-        kernels::backward::decay_invisible_moments<3><<<div_round_up(n_elements_means, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-            primitive_buffers.n_touched_tiles, moments_means, n_elements_means);
-
-        const int n_elements_scales = n_primitives * 3;
-        kernels::backward::decay_invisible_moments<3><<<div_round_up(n_elements_scales, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-            primitive_buffers.n_touched_tiles, moments_scales, n_elements_scales);
-
-        const int n_elements_rotations = n_primitives * 4;
-        kernels::backward::decay_invisible_moments<4><<<div_round_up(n_elements_rotations, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-            primitive_buffers.n_touched_tiles, moments_rotations, n_elements_rotations);
-
-        const int n_elements_opacities = n_primitives;
-        kernels::backward::decay_invisible_moments<1><<<div_round_up(n_elements_opacities, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-            primitive_buffers.n_touched_tiles, moments_opacities, n_elements_opacities);
-
-        const int n_elements_sh_coefficients_0 = n_primitives * 3;
-        kernels::backward::decay_invisible_moments<3><<<div_round_up(n_elements_sh_coefficients_0, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-            primitive_buffers.n_touched_tiles, moments_sh_coefficients_0, n_elements_sh_coefficients_0);
-
-        if (active_sh_bases > 1) {
-            constexpr int elements_per_primitive_sh_coefficients_rest = config::n_sh_bases_rest * 3;
-            const int n_elements_sh_coefficients_rest = n_primitives * elements_per_primitive_sh_coefficients_rest;
-            kernels::backward::decay_invisible_moments<elements_per_primitive_sh_coefficients_rest><<<div_round_up(n_elements_sh_coefficients_rest, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-                primitive_buffers.n_touched_tiles, moments_sh_coefficients_rest, n_elements_sh_coefficients_rest);
-        }
     }
 
 }

@@ -53,6 +53,8 @@ ALL_SCENES=(bonsai counter kitchen room bicycle garden stump)
 METHODS=("${ALL_METHODS[@]}")
 SCENES=(bonsai)
 REPEATS=1
+BENCH_VERSION="—"
+BENCH_COMMIT=""
 
 # ── parse args ────────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -63,6 +65,10 @@ while [[ $# -gt 0 ]]; do
             IFS=',' read -ra SCENES <<< "$2"; shift 2 ;;
         --repeats)
             REPEATS="$2"; shift 2 ;;
+        --version)
+            BENCH_VERSION="$2"; shift 2 ;;
+        --commit)
+            BENCH_COMMIT="$2"; shift 2 ;;
         -h|--help)
             head -20 "${BASH_SOURCE[0]}" | grep '^#' | sed 's/^# \?//'
             exit 0 ;;
@@ -218,9 +224,9 @@ for ((i=0; i<TOTAL; i++)); do
 
     # append to results
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
-    GIT_COMMIT=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "?")
-    printf "| %s | — | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n" \
-        "$TIMESTAMP" "$GIT_COMMIT" "$display" "$scene" "$rep" \
+    GIT_COMMIT="${BENCH_COMMIT:-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "?")}"
+    printf "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n" \
+        "$TIMESTAMP" "$BENCH_VERSION" "$GIT_COMMIT" "$display" "$scene" "$rep" \
         "$PSNR" "$SSIM" "$LPIPS" \
         "$ELAPSED" "$VRAM_ALLOC" "$VRAM_RESV" "$N_GAUSS" \
         >> "$RESULTS_FILE"
