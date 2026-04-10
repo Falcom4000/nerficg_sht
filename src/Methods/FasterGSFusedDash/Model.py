@@ -271,30 +271,36 @@ class Gaussians(torch.nn.Module):
         render_scale: int,
         densify_rate: float,
     ) -> int:
-        """DashGaussian-style densification with top-k primitive budget.
+        """DashGaussian-style densification: prune-first, then top-k with DashGaussian budget.
 
-        Differences from adaptive_density_control:
-        - grad_threshold applied without render_scale scaling (conflict A fix).
-          Stored NDC gradients scale linearly with render_scale, not r²; applying
-          ×r² would over-suppress 49× at scale=7, blocking all densification.
-        - Top-k selection limits new Gaussians to densify_rate × N per step.
-        - Returns momentum_add (int): number of candidates before budget cap,
-          used by TrainingScheduler to update P_fin.
-        - Uses FasterGSFused-style direct tensor concat + moments zero-init
-          (no PyTorch optimizer; moments managed manually).
+        Order (matches DashGaussian train_dash.py):
+          1. Prune low-opacity + degenerate Gaussians first so top-k budget
+             isn't wasted on points that would be removed anyway.
+          2. Budget = min(cur_n*(1+rate) - post_prune_n, post_prune_n)
+             This compensates for pruned Gaussians: if 5k are pruned, the
+             budget grows by 5k so total count still tracks the scheduler target.
+             Safe because opacity moments are zeroed on reset (moments_opacities.zero_()),
+             keeping prune counts normal and preventing explosive growth.
+          3. Top-k selection + clone/split on surviving Gaussians.
         """
-        # no threshold scaling (conflict A fix)
-        effective_threshold = grad_threshold
+        cur_n = self._means.shape[0]
 
-        # mean gradient magnitude per Gaussian (lazy normalisation)
+        # ① prune first: low-opacity + degenerate
+        pre_prune = self._opacities.flatten() < math.log(min_opacity / (1 - min_opacity))
+        pre_prune |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
+        if pre_prune.any():
+            self.prune(pre_prune)
+
+        # ② DashGaussian budget formula: compensates for pruned Gaussians
+        post_prune_n = self._means.shape[0]
+        n_budget = max(0, min(int(cur_n * (1 + densify_rate) - post_prune_n), post_prune_n))
+
+        # ③ mean gradient (densification_info was pruned by self.prune above)
         mean_grads = self.densification_info[1] / self.densification_info[0].clamp_min(1.0)
-
-        # candidates that pass the threshold
-        densify_mask = mean_grads >= effective_threshold
+        densify_mask = mean_grads >= grad_threshold
         momentum_add = int(densify_mask.sum().item())
 
-        # apply top-k primitive budget
-        n_budget = max(0, int(self._means.shape[0] * densify_rate))
+        # ④ top-k selection
         if n_budget < densify_mask.sum().item():
             scored = mean_grads.clone()
             scored[~densify_mask] = -1.0
@@ -304,7 +310,7 @@ class Gaussians(torch.nn.Module):
 
         is_small = torch.max(self._scales, dim=1).values <= math.log(self.percent_dense * self.training_cameras_extent)
 
-        # duplicate small gaussians
+        # ⑤ duplicate small gaussians
         duplicate_mask = densify_mask & is_small
         n_new_gaussians_duplicate = duplicate_mask.sum().item()
         duplicated_means = self._means[duplicate_mask]
@@ -326,7 +332,7 @@ class Gaussians(torch.nn.Module):
         split_sh_coefficients_rest = self._sh_coefficients_rest[split_mask].expand(2, -1, -1, -1).flatten(end_dim=1)
         split_opacities = self._opacities[split_mask].expand(2, -1, -1).flatten(end_dim=1)
 
-        # incorporate new gaussians (FasterGSFused style: direct concat + zero moments)
+        # ⑥ incorporate new gaussians
         n_new_gaussians = n_new_gaussians_duplicate + n_new_gaussians_split
         self._means.data = torch.cat([self._means, duplicated_means, split_means])
         self._sh_coefficients_0.data = torch.cat([self._sh_coefficients_0, duplicated_sh_coefficients_0, split_sh_coefficients_0])
@@ -341,16 +347,14 @@ class Gaussians(torch.nn.Module):
         self.moments_scales = torch.cat([self.moments_scales, torch.zeros((n_new_gaussians, *self.moments_scales.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_rotations = torch.cat([self.moments_rotations, torch.zeros((n_new_gaussians, *self.moments_rotations.shape[1:]), dtype=torch.float32, device='cuda')])
 
-        # densification info is no longer valid after parameter changes
         self._densification_info = None
 
-        # prune: split parents + low-opacity + degenerate + (optionally) oversized
+        # ⑦ post-densify: only remove split parents + oversized (opacity already handled above)
         prune_mask = torch.cat([split_mask, torch.zeros(n_new_gaussians, dtype=torch.bool, device='cuda')])
-        prune_mask |= self._opacities.flatten() < math.log(min_opacity / (1 - min_opacity))
-        prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
         if prune_large_gaussians:
             prune_mask |= self._scales.max(dim=1).values > math.log(0.1 * self.training_cameras_extent)
-        self.prune(prune_mask)
+        if prune_mask.any():
+            self.prune(prune_mask)
 
         return momentum_add
 
