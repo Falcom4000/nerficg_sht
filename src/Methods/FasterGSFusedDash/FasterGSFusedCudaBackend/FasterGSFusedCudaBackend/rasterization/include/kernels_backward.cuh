@@ -492,20 +492,4 @@ namespace faster_gs::rasterization::kernels::backward {
         moments[idx] = new_moments;
     }
 
-    // Decay invisible Gaussian moments without updating parameters.
-    // Used when apply_invisible_momentum=false (reduced resolution): stale
-    // momentum decays to ~0 by the time full resolution resumes, preventing
-    // old gradient directions from misdirecting Gaussians on the first step.
-    template <uint n_attributes>
-    __global__ void decay_invisible_moments(
-        const uint* __restrict__ primitive_n_touched_tiles,
-        float2* __restrict__ moments,
-        const int n_elements)
-    {
-        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        const uint primitive_idx = idx / n_attributes;
-        if (idx >= n_elements || primitive_n_touched_tiles[primitive_idx] != 0) return;
-        moments[idx] *= make_float2(config::beta1, config::beta2);
-    }
-
 }

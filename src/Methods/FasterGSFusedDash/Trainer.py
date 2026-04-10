@@ -114,22 +114,6 @@ class FasterGSFusedDashTrainer(GuiTrainer):
         )
         self.current_render_scale = self.dash_scheduler.get_res_scale(1)
         self._last_morton_n = 0
-
-        # pre-cache downsampled GT images for all (view_idx, scale) pairs
-        self._gt_cache = {}
-        if not self.USE_RANDOM_BACKGROUND_COLOR:
-            max_scale = max(2, int(self.dash_scheduler.max_reso_scale))
-            dataset.train()
-            for scale in range(2, max_scale + 1):
-                for i, view in enumerate(dataset):
-                    rgb = view.rgb
-                    if view.alpha is not None:
-                        rgb = apply_background_color(rgb, view.alpha, view.camera.background_color)
-                    self._gt_cache[(i, scale)] = F.interpolate(
-                        rgb.unsqueeze(0), scale_factor=1.0 / scale, mode='area'
-                    ).squeeze(0)
-            Logger.log_info(f'GT cache: {len(self._gt_cache)} (view, scale) pairs pre-computed')
-
         Logger.log_info(f'DashGaussian scheduler ready — initial render_scale: {self.current_render_scale}')
 
     @training_callback(priority=110, start_iteration=1000, iteration_stride=1000)
@@ -201,8 +185,7 @@ class FasterGSFusedDashTrainer(GuiTrainer):
         lr_iter = max(1, iteration - self.dash_scheduler.lr_decay_from_iter() + 1)
         self.model.gaussians.update_learning_rate(lr_iter)
         # get random view
-        sample = self.train_sampler.get(dataset=dataset)
-        view, sample_id = sample['view'], sample['sample_id']
+        view = self.train_sampler.get(dataset=dataset)['view']
         bg_color = torch.rand_like(view.camera.background_color) if self.USE_RANDOM_BACKGROUND_COLOR else view.camera.background_color
 
         render_scale = self.dash_scheduler.get_res_scale(iteration)
@@ -218,18 +201,16 @@ class FasterGSFusedDashTrainer(GuiTrainer):
             render_scale=render_scale,
         )
 
-        # GT image: use pre-cached downsampled version when available
-        cache_key = (sample_id, render_scale)
-        if render_scale > 1 and cache_key in self._gt_cache:
-            rgb_gt = self._gt_cache[cache_key]
-        else:
-            rgb_gt = view.rgb
-            if (alpha_gt := view.alpha) is not None:
-                rgb_gt = apply_background_color(rgb_gt, alpha_gt, bg_color)
-            if render_scale > 1:
-                rgb_gt = F.interpolate(
-                    rgb_gt.unsqueeze(0), scale_factor=1.0 / render_scale, mode='area',
-                ).squeeze(0)
+        # downsample GT with anti-aliased area interpolation (Gap 1)
+        rgb_gt = view.rgb
+        if (alpha_gt := view.alpha) is not None:
+            rgb_gt = apply_background_color(rgb_gt, alpha_gt, bg_color)
+        if render_scale > 1:
+            rgb_gt = F.interpolate(
+                rgb_gt.unsqueeze(0),
+                scale_factor=1.0 / render_scale,
+                mode='area',
+            ).squeeze(0)
 
         # calculate loss
         loss = self.loss(image, rgb_gt) + 0.0 * autograd_dummy

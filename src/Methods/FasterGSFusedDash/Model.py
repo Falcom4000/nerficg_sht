@@ -291,11 +291,9 @@ class Gaussians(torch.nn.Module):
         if pre_prune.any():
             self.prune(pre_prune)
 
-        # ② budget: pre-prune count × rate (same magnitude as V1).
-        # Using cur_n (pre-prune) rather than the DashGaussian compensation
-        # formula avoids over-allocating when pruning is light (outdoor scenes).
+        # ② DashGaussian budget formula: compensates for pruned Gaussians
         post_prune_n = self._means.shape[0]
-        n_budget = max(0, int(cur_n * densify_rate))
+        n_budget = max(0, min(int(cur_n * (1 + densify_rate) - post_prune_n), post_prune_n))
 
         # ③ mean gradient (densification_info was pruned by self.prune above)
         mean_grads = self.densification_info[1] / self.densification_info[0].clamp_min(1.0)
