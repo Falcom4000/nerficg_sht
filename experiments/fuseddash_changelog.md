@@ -218,6 +218,57 @@ SH gate 移除对 outdoor 场景帮助大（view-dependent 效果更丰富，早
 
 ---
 
+## 版本 V4：prune-first + DashGaussian budget 公式
+
+Commit: `02a1fef`
+
+### 改动内容
+
+V4 = V3 + prune-first 密化顺序 + DashGaussian 原始 budget 公式。
+
+V2 尝试过相同方向但失败，根因是 opacity moments 未清零导致密化爆炸。
+现在 opacity moments 已恢复清零，公式可以安全使用：
+
+```python
+n_budget = min(int(cur_n * (1 + densify_rate) - post_prune_n), post_prune_n)
+```
+
+此公式补偿了被剪掉的 Gaussian：若本轮剪了 5k，budget 相应增加 5k，
+使总数量稳定跟踪调度器目标。prune-first 确保 top-k 名额不浪费在注定被剪的 Gaussian 上。
+
+文件：`Model.py` — `dash_density_control_topk()`
+
+### V4 结果（3-run avg，02a1fef）
+
+| 场景 | GSDash | V1 | V3 | V4 | V3→V4 | V4 vs GSDash |
+|------|--------|----|----|-----|-------|--------------|
+| bonsai | 32.59 | 32.70 | 32.57 | **32.69** | +0.11 | **+0.10** |
+| counter | — | 29.40 | 29.48 | 29.47 | -0.01 | — |
+| kitchen | 32.10 | 31.84 | 31.80 | **32.12** | **+0.32** | **+0.02** |
+| room | 32.44 | 32.24 | 32.30 | 32.32 | +0.02 | -0.12 |
+| bicycle | 25.15 | 25.10 | 25.09 | 25.09 | +0.00 | -0.06 |
+| garden | 27.52 | 27.45 | 27.47 | 27.38 | -0.10 | -0.14 |
+| stump | 26.69 | 25.78 | 26.33 | 26.33 | +0.00 | -0.36 |
+
+训练时间和 Gaussian 数量与 V3 几乎相同（无爆炸增长）。
+
+**核心收益**：kitchen +0.28 vs V1（现与 GSDash 持平），bonsai 恢复 +0.10 vs GSDash。
+**唯一回退**：garden -0.07 vs V1（prune-first 对 outdoor 场景轻微负面）。
+**V4 确立为新基线。**
+
+### V1→V4 累计改进总结
+
+| 场景 | V1 | V4 | 改进 |
+|------|----|----|------|
+| bonsai | 32.70 | 32.69 | -0.01 |
+| kitchen | 31.84 | 32.12 | **+0.28** |
+| room | 32.24 | 32.32 | +0.08 |
+| bicycle | 25.10 | 25.09 | -0.01 |
+| garden | 27.45 | 27.38 | -0.07 |
+| stump | 25.78 | 26.33 | **+0.55** |
+
+---
+
 ## 已知冲突与设计决策汇总
 
 | 冲突 | 状态 | 版本 | 备注 |
