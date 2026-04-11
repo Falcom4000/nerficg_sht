@@ -171,6 +171,32 @@ class FasterGSFusedDashTrainer(GuiTrainer):
             Logger.log_info('resetting opacities one additional time because using non-black background')
             self.model.gaussians.reset_opacities()
 
+    @torch.no_grad()
+    def _rescale_moments_on_resolution_change(self, old_scale: int, new_scale: int) -> None:
+        """V6 #4: rescale Adam moments when render resolution increases (scale number drops).
+
+        At low resolution, gradients are ~old_scale/new_scale times smaller than at the new
+        resolution.  Rescaling m1 by ratio and m2 by ratio² aligns the moment statistics with
+        the expected new-scale gradient magnitude so that Adam's effective step size remains
+        smooth across the transition instead of spiking for the first few hundred iterations.
+
+        This is an approximation — the true scaling factor varies per parameter type — but
+        it eliminates the systematic under-estimation of m2 relative to m1 that occurs when
+        the gradient magnitude suddenly jumps up.
+        """
+        ratio = float(old_scale) / float(new_scale)  # > 1 when resolution increases
+        ratio_sq = ratio * ratio
+        for moments in [
+            self.model.gaussians.moments_means,
+            self.model.gaussians.moments_scales,
+            self.model.gaussians.moments_rotations,
+            self.model.gaussians.moments_opacities,
+            self.model.gaussians.moments_sh_coefficients_0,
+            self.model.gaussians.moments_sh_coefficients_rest,
+        ]:
+            moments[..., 0].mul_(ratio)     # m1 scales linearly with gradient magnitude
+            moments[..., 1].mul_(ratio_sq)  # m2 scales with gradient²
+
     @training_callback(priority=80)
     def training_iteration(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Training step with DashGaussian resolution scaling and fused Adam."""
@@ -189,6 +215,9 @@ class FasterGSFusedDashTrainer(GuiTrainer):
         bg_color = torch.rand_like(view.camera.background_color) if self.USE_RANDOM_BACKGROUND_COLOR else view.camera.background_color
 
         render_scale = self.dash_scheduler.get_res_scale(iteration)
+        # V6 #4: rescale moments when resolution increases to keep Adam step size smooth
+        if render_scale < self.current_render_scale:
+            self._rescale_moments_on_resolution_change(self.current_render_scale, render_scale)
         self.current_render_scale = render_scale
 
         # render at reduced resolution (Conflict G fix: scaled dims passed to CUDA via Renderer)

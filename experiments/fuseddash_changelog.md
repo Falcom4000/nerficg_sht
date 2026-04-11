@@ -288,3 +288,52 @@ n_budget = min(int(cur_n * (1 + densify_rate) - post_prune_n), post_prune_n)
 | Budget 公式 | MODIFIED | V2→V2.1 | V2: target-post_prune（爆炸）; V2.1: post_prune×rate |
 | Opacity moments reset | REVERTED | V2→V2.1 | V2: 不清零（爆炸）; V2.1: 恢复清零 |
 | 密化起始 iter | ALIGNED | V2.1 | 600→500 |
+
+---
+
+## 版本 V6：invisible moment decay + 分辨率跳变 moment 重缩放
+
+### 改动内容
+
+**1. Invisible moment decay（CUDA，#13）**
+
+`apply_invisible_momentum=False`（低分辨率阶段）的语义从"完全冻结"改为"只衰减 moments"。
+
+原来（V0–V5）：低分辨率下 invisible Gaussian 的 moments 完全冻结，切回全分辨率时
+陈旧 momentum 仍保留原方向和幅值，导致方向性偏差。
+
+现在：每步对 invisible Gaussian 执行 `m1 *= beta1; m2 *= beta2`，无参数更新。
+`0.9^N → 0` 保证陈旧 momentum 自然消散，切换分辨率时 new high-res gradients 可快速主导。
+
+文件：`FasterGSFusedCudaBackend/rasterization/include/kernels_backward.cuh`（新增 `decay_moments_invisible` kernel）
+      `FasterGSFusedCudaBackend/rasterization/src/backward.cu`（新增 else 分支）
+
+注：Python API 无变化，`apply_invisible_momentum=(render_scale == 1)` 语义不变，
+仅 False 分支行为从"do nothing"改为"decay only"。
+
+**2. 分辨率跳变时 Adam moment 重缩放（Python，#4）**
+
+当 `render_scale` 下降（分辨率提升）时，对全部参数组的 moments 做等比缩放：
+- `m1 *= ratio`（ratio = old_scale / new_scale）
+- `m2 *= ratio²`
+
+理论依据：低分辨率梯度幅值约为高分辨率的 1/ratio。不做重缩放时，
+m2 在分辨率跳变后短期内相对 m1 偏小（m2 是梯度²，恢复更慢），
+导致 Adam effective step size 短暂偏高。重缩放使两者同步跟上新梯度量级。
+
+注：这是对各参数类型梯度缩放关系的近似处理，实际效果以 benchmark 验证为准。
+
+文件：`Trainer.py`（新增 `_rescale_moments_on_resolution_change` + 在 `training_iteration` 中调用）
+
+### 为什么这两项一起做
+
+- #13 解决"方向性"问题：冻结的 momentum 携带错误方向
+- #4 解决"幅值性"问题：跳变后 m1/m2 比例失衡
+- 两者正交，无相互依赖，同时引入不影响隔离分析
+- 均为已知问题的最小改动，无副作用（#13 纯 CUDA 新增路径，#4 纯 Python 3 行）
+
+### 预期结果
+
+- garden/stump 等 Gaussian 快速增长的场景（低分辨率期长、invisible Gaussian 多）改善最明显
+- 若 #13 单独贡献可观，#4 贡献有限（Adam 本身对幅值鲁棒），后续可隔离验证
+

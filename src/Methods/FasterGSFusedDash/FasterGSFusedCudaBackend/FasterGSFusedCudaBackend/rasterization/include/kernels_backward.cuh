@@ -492,4 +492,21 @@ namespace faster_gs::rasterization::kernels::backward {
         moments[idx] = new_moments;
     }
 
+    // V6 #13: decay moments for invisible Gaussians without updating parameters.
+    // Used during low-resolution training (render_scale > 1) so that stale momentum
+    // accumulated at low resolution naturally fades before the switch back to full resolution,
+    // preventing directional drift when visibility patterns change.
+    template <uint n_attributes>
+    __global__ void decay_moments_invisible(
+        const uint* __restrict__ primitive_n_touched_tiles,
+        float2* __restrict__ moments,
+        const int n_elements)
+    {
+        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        const uint primitive_idx = idx / n_attributes;
+        if (idx >= n_elements || primitive_n_touched_tiles[primitive_idx] != 0) return;
+        // decay m1 and m2 toward zero — no parameter update
+        moments[idx] = moments[idx] * make_float2(config::beta1, config::beta2);
+    }
+
 }

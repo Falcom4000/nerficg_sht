@@ -205,6 +205,42 @@ void faster_gs::rasterization::backward(
             bias_correction2_sqrt_rcp
         );
         CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_rest)")
+    } else {
+        // V6 #13: low-resolution phase — decay moments for invisible Gaussians without
+        // updating parameters.  This prevents stale momentum from causing directional
+        // drift when the renderer switches back to full resolution.
+        const int n_elements_means = n_primitives * 3;
+        kernels::backward::decay_moments_invisible<3><<<div_round_up(n_elements_means, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles, moments_means, n_elements_means);
+        CHECK_CUDA(config::debug, "decay_moments_invisible (means)")
+
+        const int n_elements_scales = n_primitives * 3;
+        kernels::backward::decay_moments_invisible<3><<<div_round_up(n_elements_scales, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles, moments_scales, n_elements_scales);
+        CHECK_CUDA(config::debug, "decay_moments_invisible (scales)")
+
+        const int n_elements_rotations = n_primitives * 4;
+        kernels::backward::decay_moments_invisible<4><<<div_round_up(n_elements_rotations, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles, moments_rotations, n_elements_rotations);
+        CHECK_CUDA(config::debug, "decay_moments_invisible (rotations)")
+
+        const int n_elements_opacities = n_primitives;
+        kernels::backward::decay_moments_invisible<1><<<div_round_up(n_elements_opacities, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles, moments_opacities, n_elements_opacities);
+        CHECK_CUDA(config::debug, "decay_moments_invisible (opacities)")
+
+        const int n_elements_sh_0 = n_primitives * 3;
+        kernels::backward::decay_moments_invisible<3><<<div_round_up(n_elements_sh_0, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+            primitive_buffers.n_touched_tiles, moments_sh_coefficients_0, n_elements_sh_0);
+        CHECK_CUDA(config::debug, "decay_moments_invisible (sh_coefficients_0)")
+
+        if (active_sh_bases > 1) {
+            constexpr int elements_per_primitive_sh_rest = config::n_sh_bases_rest * 3;
+            const int n_elements_sh_rest = n_primitives * elements_per_primitive_sh_rest;
+            kernels::backward::decay_moments_invisible<elements_per_primitive_sh_rest><<<div_round_up(n_elements_sh_rest, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
+                primitive_buffers.n_touched_tiles, moments_sh_coefficients_rest, n_elements_sh_rest);
+            CHECK_CUDA(config::debug, "decay_moments_invisible (sh_coefficients_rest)")
+        }
     }
 
 }
