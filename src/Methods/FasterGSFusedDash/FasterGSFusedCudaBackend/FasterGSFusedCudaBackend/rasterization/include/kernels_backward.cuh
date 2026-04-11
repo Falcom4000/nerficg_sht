@@ -7,7 +7,6 @@
 #include "helper_math.h"
 #include "utils.h"
 #include <cstdint>
-#include <cuda_fp16.h>
 #include <cooperative_groups.h>
 namespace cg = cooperative_groups;
 
@@ -26,12 +25,13 @@ namespace faster_gs::rasterization::kernels::backward {
         float2* __restrict__ moments_opacities,
         float2* __restrict__ moments_sh_coefficients_0,
         float2* __restrict__ moments_sh_coefficients_rest,
+        int* __restrict__ step_counts,
         const float4* __restrict__ w2c,
         const float3* __restrict__ cam_position,
         const uint* __restrict__ primitive_n_touched_tiles,
-        const __half2* __restrict__ grad_mean2d,   // V8: fp16
-        const __half* __restrict__ grad_conic,      // V8: fp16
-        const __half* __restrict__ grad_opacities,  // V8: fp16
+        const float2* __restrict__ grad_mean2d,
+        const float* __restrict__ grad_conic,
+        const float* __restrict__ grad_opacities,
         const float3* __restrict__ grad_colors,
         float* __restrict__ densification_info,
         const uint n_primitives,
@@ -43,28 +43,30 @@ namespace faster_gs::rasterization::kernels::backward {
         const float focal_y,
         const float center_x,
         const float center_y,
-        const float step_size_means,
-        const float bias_correction1_rcp,
-        const float bias_correction2_sqrt_rcp)
+        const float current_mean_lr)
     {
         const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (primitive_idx >= n_primitives || primitive_n_touched_tiles[primitive_idx] == 0) return;
 
-        // Cold primitive detection: newly created Gaussians have all-zero moments.
-        // Use t=1 bias correction instead of the global-step correction to avoid the
-        // 3.16x first-step amplification for late-created Gaussians (V1 fix).
-        const float2 _cold_check = moments_means[primitive_idx * 3];
-        float eff_bc1_rcp = bias_correction1_rcp;
-        float eff_bc2_sqrt_rcp = bias_correction2_sqrt_rcp;
-        float eff_step_size_means = step_size_means;
-        if (_cold_check.x == 0.0f && _cold_check.y == 0.0f) {
-            eff_bc1_rcp = 1.0f / (1.0f - config::beta1);
-            eff_bc2_sqrt_rcp = rsqrtf(1.0f - config::beta2);
-            eff_step_size_means = (step_size_means / bias_correction1_rcp) * eff_bc1_rcp;
+        // V7: per-Gaussian Adam step count for accurate bias correction.
+        // Each Gaussian tracks its own number of Adam updates, so newly created Gaussians
+        // (even those created late in training) get proper bias correction from step 1,
+        // not the inflated correction from the global iteration counter.
+        const int t = atomicAdd(&step_counts[primitive_idx], 1) + 1;  // post-increment → t >= 1
+        float eff_bc1_rcp, eff_bc2_sqrt_rcp;
+        if (t < config::step_count_stable_threshold) {
+            const float tf = (float)t;
+            eff_bc1_rcp       = 1.0f / (1.0f - expf(tf * config::log_beta1));
+            eff_bc2_sqrt_rcp  = rsqrtf(1.0f - expf(tf * config::log_beta2));
+        } else {
+            // For t >= 1000: beta^t < 2e-46, bias correction = 1.0 to machine precision
+            eff_bc1_rcp      = 1.0f;
+            eff_bc2_sqrt_rcp = 1.0f;
         }
+        const float eff_step_size_means = current_mean_lr * eff_bc1_rcp;
 
         const float step_size_opacities = config::lr_opacities * eff_bc1_rcp;
-        adam_step_helper<1, 0>(__half2float(grad_opacities[primitive_idx]), opacities, moments_opacities, primitive_idx, step_size_opacities, eff_bc2_sqrt_rcp);
+        adam_step_helper<1, 0>(grad_opacities[primitive_idx], opacities, moments_opacities, primitive_idx, step_size_opacities, eff_bc2_sqrt_rcp);
 
         // load 3d mean
         const float3 mean3d = means[primitive_idx];
@@ -146,9 +148,9 @@ namespace faster_gs::rasterization::kernels::backward {
         const float determinant_sq = determinant * determinant;
         const float determinant_rcp_sq = 1.0f / determinant_sq;
         const float3 dL_dconic = make_float3(
-            __half2float(grad_conic[primitive_idx]),
-            __half2float(grad_conic[n_primitives + primitive_idx]),
-            __half2float(grad_conic[2 * n_primitives + primitive_idx])
+            grad_conic[primitive_idx],
+            grad_conic[n_primitives + primitive_idx],
+            grad_conic[2 * n_primitives + primitive_idx]
         );
         const float3 dL_dcov2d = determinant_rcp_sq * make_float3(
             2.0f * bc * dL_dconic.y - cc * dL_dconic.x - bb * dL_dconic.z,
@@ -184,8 +186,8 @@ namespace faster_gs::rasterization::kernels::backward {
         const float dL_dj13 = w2c_r3.x * dL_djw_r1.x + w2c_r3.y * dL_djw_r1.y + w2c_r3.z * dL_djw_r1.z;
         const float dL_dj23 = w2c_r3.x * dL_djw_r2.x + w2c_r3.y * dL_djw_r2.y + w2c_r3.z * dL_djw_r2.z;
 
-        // load gradient of 2d mean (fp16 → fp32)
-        const float2 dL_dmean2d = __half22float2(grad_mean2d[primitive_idx]);
+        // load gradient of 2d mean
+        const float2 dL_dmean2d = grad_mean2d[primitive_idx];
 
         // for adaptive density control
         if (densification_info != nullptr) {
@@ -278,9 +280,9 @@ namespace faster_gs::rasterization::kernels::backward {
         const uint* __restrict__ tile_n_processed,
         const uint* __restrict__ bucket_tile_index,
         const float4* __restrict__ bucket_color_transmittance,
-        __half2* __restrict__ grad_mean2d,  // V8: fp16
-        __half* __restrict__ grad_conic,    // V8: fp16
-        __half* __restrict__ grad_opacity,  // V8: fp16
+        float2* __restrict__ grad_mean2d,
+        float* __restrict__ grad_conic,
+        float* __restrict__ grad_opacity,
         float3* __restrict__ grad_colors,
         const uint n_primitives,
         const uint width,
@@ -459,14 +461,15 @@ namespace faster_gs::rasterization::kernels::backward {
             transmittance *= one_minus_alpha;
         }
 
-        // finally add the gradients using atomics (fp16 buffers — compute 7.0+ required)
+        // finally add the gradients using atomics
         if (valid_primitive) {
-            atomicAdd(&grad_mean2d[primitive_idx], __float22half2_rn(dL_dmean2d_accum));
-            atomicAdd(&grad_conic[primitive_idx], __float2half(dL_dconic_accum.x));
-            atomicAdd(&grad_conic[n_primitives + primitive_idx], __float2half(dL_dconic_accum.y));
-            atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], __float2half(dL_dconic_accum.z));
+            atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d_accum.x);
+            atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d_accum.y);
+            atomicAdd(&grad_conic[primitive_idx], dL_dconic_accum.x);
+            atomicAdd(&grad_conic[n_primitives + primitive_idx], dL_dconic_accum.y);
+            atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], dL_dconic_accum.z);
             const float dL_dopacity = opacity * (1.0f - opacity) * dL_dopacity_accum;
-            atomicAdd(&grad_opacity[primitive_idx], __float2half(dL_dopacity));
+            atomicAdd(&grad_opacity[primitive_idx], dL_dopacity);
             atomicAdd(&grad_colors[primitive_idx].x, dL_dcolor_accum.x);
             atomicAdd(&grad_colors[primitive_idx].y, dL_dcolor_accum.y);
             atomicAdd(&grad_colors[primitive_idx].z, dL_dcolor_accum.z);
@@ -489,6 +492,20 @@ namespace faster_gs::rasterization::kernels::backward {
         const float denom = sqrtf(new_moments.y) * bias_correction2_sqrt_rcp + config::epsilon;
         param[idx] -= step_size * new_moments.x / denom;
         moments[idx] = new_moments;
+    }
+
+    // V7: increment step counts for invisible Gaussians that receive a full Adam update
+    // (apply_invisible_momentum=True, i.e., full-resolution training).  Their step count
+    // must advance even though their gradient is zero so that bias correction stays
+    // consistent with the visible path.
+    __global__ void increment_step_counts_invisible(
+        const uint* __restrict__ primitive_n_touched_tiles,
+        int* __restrict__ step_counts,
+        const int n_primitives)
+    {
+        const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (primitive_idx >= (uint)n_primitives || primitive_n_touched_tiles[primitive_idx] != 0) return;
+        atomicAdd(&step_counts[primitive_idx], 1);
     }
 
     // V6 #13: decay moments for invisible Gaussians without updating parameters.

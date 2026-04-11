@@ -30,6 +30,7 @@ namespace faster_gs::rasterization {
 
     void backward_wrapper(
         torch::Tensor& densification_info,
+        torch::Tensor& step_counts,
         torch::Tensor& means,
         torch::Tensor& scales,
         torch::Tensor& rotations,
