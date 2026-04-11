@@ -29,6 +29,11 @@ namespace faster_gs::rasterization::config {
     DEF float beta1 = 0.9f;
     DEF float beta2 = 0.999f;
     DEF float epsilon = 1e-15f;
+    // log(beta) used for per-Gaussian bias correction: expf(t * log_beta)
+    DEF float log_beta1 = -0.10536051565f;  // logf(0.9f)
+    DEF float log_beta2 = -0.0010005003f;   // logf(0.999f)
+    // for t >= threshold, beta^t ≈ 0 so bias correction ≈ 1.0 — skip expf
+    DEF int step_count_stable_threshold = 1000;
     DEF float lr_sh_coefficients_0 = 0.0025f;
     DEF float lr_sh_coefficients_rest = 0.000125f; // 0.0025 / 20;
     DEF float lr_opacities = 0.025f; // recently updated in official code; used to be 0.05

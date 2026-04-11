@@ -79,11 +79,12 @@ class FasterGSFusedDashRenderer(BaseRenderer):
             moments_sh_coefficients_0=self.model.gaussians.moments_sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             moments_sh_coefficients_rest=self.model.gaussians.moments_sh_coefficients_rest,
+            step_counts=self.model.gaussians.step_counts,
             autograd_dummy=autograd_dummy,
             densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.model.gaussians.lr_means, adam_step_count, render_scale=render_scale),
-            # Conflict H fix: at reduced resolution, Gaussians visible at full res may have
-            # zero touched tiles — suppressing their momentum-based updates prevents drift.
+            # Conflict H / V6: at reduced resolution, decay invisible Gaussian moments
+            # instead of freezing; at full resolution, run full adam_step_invisible.
             apply_invisible_momentum=(render_scale == 1),
         )
         return image, autograd_dummy

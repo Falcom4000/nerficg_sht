@@ -57,6 +57,7 @@ class _Rasterize(torch.autograd.Function):
         moments_opacities: torch.Tensor,
         moments_sh_coefficients_0: torch.Tensor,
         moments_sh_coefficients_rest: torch.Tensor,
+        step_counts: torch.Tensor,
         densification_info: torch.Tensor,
         rasterizer_settings: RasterizerSettings,
         apply_invisible_momentum: bool,
@@ -96,6 +97,7 @@ class _Rasterize(torch.autograd.Function):
         ctx.moments_opacities = moments_opacities
         ctx.moments_sh_coefficients_0 = moments_sh_coefficients_0
         ctx.moments_sh_coefficients_rest = moments_sh_coefficients_rest
+        ctx.step_counts = step_counts
         ctx.densification_info = densification_info
         ctx.mark_non_differentiable(means)
         ctx.mark_non_differentiable(scales)
@@ -121,6 +123,7 @@ class _Rasterize(torch.autograd.Function):
     ) -> 'tuple[None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]':
         _C.backward(
             ctx.densification_info,
+            ctx.step_counts,
             ctx.means,
             ctx.scales,
             ctx.rotations,
@@ -153,6 +156,7 @@ class _Rasterize(torch.autograd.Function):
             None,  # moments_opacities
             None,  # moments_sh_coefficients_0
             None,  # moments_sh_coefficients_rest
+            None,  # step_counts
             None,  # densification_info
             None,  # rasterizer_settings
             None,  # apply_invisible_momentum
@@ -175,6 +179,7 @@ def diff_rasterize(
     moments_opacities: torch.Tensor = None,
     moments_sh_coefficients_0: torch.Tensor = None,
     moments_sh_coefficients_rest: torch.Tensor = None,
+    step_counts: torch.Tensor = None,
     apply_invisible_momentum: bool = True,
 ) -> torch.Tensor:
     return _Rasterize.apply(
@@ -191,6 +196,7 @@ def diff_rasterize(
         torch.empty(0) if moments_opacities is None else moments_opacities,
         torch.empty(0) if moments_sh_coefficients_0 is None else moments_sh_coefficients_0,
         torch.empty(0) if moments_sh_coefficients_rest is None else moments_sh_coefficients_rest,
+        torch.empty(0, dtype=torch.int32) if step_counts is None else step_counts,
         densification_info,
         rasterizer_settings,
         apply_invisible_momentum,
