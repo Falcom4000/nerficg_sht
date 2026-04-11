@@ -41,8 +41,6 @@ class Gaussians(torch.nn.Module):
         self.moments_scales = torch.empty(0)
         self.moments_rotations = torch.empty(0)
         self.moments_opacities = torch.empty(0)
-        # V7: per-Gaussian Adam step counts (int32) for accurate bias correction
-        self.step_counts = torch.empty(0, dtype=torch.int32)
 
     @property
     def means(self) -> torch.Tensor:
@@ -147,8 +145,6 @@ class Gaussians(torch.nn.Module):
         self.moments_scales = torch.zeros(*self._scales.shape, 2, dtype=torch.float32, device='cuda')
         self.moments_rotations = torch.zeros(*self._rotations.shape, 2, dtype=torch.float32, device='cuda')
         self.moments_opacities = torch.zeros(*self._opacities.shape, 2, dtype=torch.float32, device='cuda')
-        # V7: per-Gaussian step counts, initialized to 0 for all primitives
-        self.step_counts = torch.zeros(n_initial_gaussians, dtype=torch.int32, device='cuda')
 
     def training_setup(self, training_wrapper, training_cameras_extent: float) -> None:
         """Sets up the optimizer."""
@@ -188,7 +184,6 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = self.moments_opacities[valid_mask].contiguous()
         self.moments_scales = self.moments_scales[valid_mask].contiguous()
         self.moments_rotations = self.moments_rotations[valid_mask].contiguous()
-        self.step_counts = self.step_counts[valid_mask].contiguous()
 
         if self._densification_info is not None:
             self._densification_info = self._densification_info[:, valid_mask].contiguous()
@@ -208,7 +203,6 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = self.moments_opacities[ordering].contiguous()
         self.moments_scales = self.moments_scales[ordering].contiguous()
         self.moments_rotations = self.moments_rotations[ordering].contiguous()
-        self.step_counts = self.step_counts[ordering].contiguous()
 
         if self._densification_info is not None:
             self._densification_info = self._densification_info[:, ordering].contiguous()
@@ -257,8 +251,6 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = torch.cat([self.moments_opacities, torch.zeros((n_new_gaussians, *self.moments_opacities.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_scales = torch.cat([self.moments_scales, torch.zeros((n_new_gaussians, *self.moments_scales.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_rotations = torch.cat([self.moments_rotations, torch.zeros((n_new_gaussians, *self.moments_rotations.shape[1:]), dtype=torch.float32, device='cuda')])
-        self.step_counts = torch.cat([self.step_counts, torch.zeros(n_new_gaussians, dtype=torch.int32, device='cuda')])
-
         # if it was set, densification info is now no longer valid
         self._densification_info = None
 
@@ -353,9 +345,6 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = torch.cat([self.moments_opacities, torch.zeros((n_new_gaussians, *self.moments_opacities.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_scales = torch.cat([self.moments_scales, torch.zeros((n_new_gaussians, *self.moments_scales.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_rotations = torch.cat([self.moments_rotations, torch.zeros((n_new_gaussians, *self.moments_rotations.shape[1:]), dtype=torch.float32, device='cuda')])
-        # V7: new Gaussians start at step_count=0 for correct bias correction from step 1
-        self.step_counts = torch.cat([self.step_counts, torch.zeros(n_new_gaussians, dtype=torch.int32, device='cuda')])
-
         self._densification_info = None
 
         # ⑦ post-densify: only remove split parents + oversized (opacity already handled above)
@@ -394,7 +383,6 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = None
         self.moments_scales = None
         self.moments_rotations = None
-        self.step_counts = None
 
         return self.means.shape[0]
 

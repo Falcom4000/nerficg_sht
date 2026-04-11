@@ -79,7 +79,6 @@ class FasterGSFusedDashRenderer(BaseRenderer):
             moments_sh_coefficients_0=self.model.gaussians.moments_sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             moments_sh_coefficients_rest=self.model.gaussians.moments_sh_coefficients_rest,
-            step_counts=self.model.gaussians.step_counts,
             autograd_dummy=autograd_dummy,
             densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.model.gaussians.lr_means, adam_step_count, render_scale=render_scale),

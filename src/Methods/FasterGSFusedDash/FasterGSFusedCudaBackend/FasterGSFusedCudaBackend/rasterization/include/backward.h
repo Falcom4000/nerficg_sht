@@ -1,6 +1,7 @@
 #pragma once
 
 #include "helper_math.h"
+#include <cuda_fp16.h>
 #include <functional>
 
 namespace faster_gs::rasterization {
@@ -8,7 +9,6 @@ namespace faster_gs::rasterization {
     void backward(
         const float* grad_image,
         const float* image,
-        int* step_counts,
         float3* means,
         float3* scales,
         float4* rotations,
@@ -28,10 +28,10 @@ namespace faster_gs::rasterization {
         char* tile_buffers_blob,
         char* instance_buffers_blob,
         char* bucket_buffers_blob,
-        float* grad_opacities,
+        __half* grad_opacities,      // V8: fp16
         float3* grad_colors,
-        float2* grad_mean2d_helper,
-        float* grad_conic_helper,
+        __half2* grad_mean2d_helper, // V8: fp16
+        __half* grad_conic_helper,   // V8: fp16
         float* densification_info,
         const int n_primitives,
         const int n_instances,

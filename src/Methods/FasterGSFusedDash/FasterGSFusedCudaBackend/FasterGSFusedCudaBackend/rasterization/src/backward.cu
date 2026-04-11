@@ -9,7 +9,6 @@
 void faster_gs::rasterization::backward(
     const float* grad_image,
     const float* image,
-    int* step_counts,
     float3* means,
     float3* scales,
     float4* rotations,
@@ -29,10 +28,10 @@ void faster_gs::rasterization::backward(
     char* tile_buffers_blob,
     char* instance_buffers_blob,
     char* bucket_buffers_blob,
-    float* grad_opacities,
+    __half* grad_opacities,
     float3* grad_colors,
-    float2* grad_mean2d_helper,
-    float* grad_conic_helper,
+    __half2* grad_mean2d_helper,
+    __half* grad_conic_helper,
     float* densification_info,
     const int n_primitives,
     const int n_instances,
@@ -75,9 +74,9 @@ void faster_gs::rasterization::backward(
         tile_buffers.n_processed,
         bucket_buffers.tile_index,
         bucket_buffers.color_transmittance,
-        grad_mean2d_helper,
-        grad_conic_helper,
-        grad_opacities,
+        reinterpret_cast<__half2*>(grad_mean2d_helper),
+        reinterpret_cast<__half*>(grad_conic_helper),
+        reinterpret_cast<__half*>(grad_opacities),
         grad_colors,
         n_primitives,
         width,
@@ -86,9 +85,9 @@ void faster_gs::rasterization::backward(
     );
     CHECK_CUDA(config::debug, "blend_backward")
 
-    // Global bias correction is still used for the adam_step_invisible path.
     const float bias_correction1_rcp = 1.0f / (1.0f - std::pow(config::beta1, adam_step_count));
     const float bias_correction2_sqrt_rcp = 1.0f / std::sqrt(1.0f - std::pow(config::beta2, adam_step_count));
+    const float step_size_means = current_mean_lr * bias_correction1_rcp;
 
     kernels::backward::preprocess_backward_cu<<<div_round_up(n_primitives, config::block_size_preprocess_backward), config::block_size_preprocess_backward>>>(
         means,
@@ -103,13 +102,12 @@ void faster_gs::rasterization::backward(
         moments_opacities,
         moments_sh_coefficients_0,
         moments_sh_coefficients_rest,
-        step_counts,
         w2c,
         cam_position,
         primitive_buffers.n_touched_tiles,
-        grad_mean2d_helper,
-        grad_conic_helper,
-        grad_opacities,
+        reinterpret_cast<const __half2*>(grad_mean2d_helper),
+        reinterpret_cast<const __half*>(grad_conic_helper),
+        reinterpret_cast<const __half*>(grad_opacities),
         grad_colors,
         densification_info,
         n_primitives,
@@ -121,7 +119,9 @@ void faster_gs::rasterization::backward(
         focal_y,
         center_x,
         center_y,
-        current_mean_lr
+        step_size_means,
+        bias_correction1_rcp,
+        bias_correction2_sqrt_rcp
     );
     CHECK_CUDA(config::debug, "preprocess_backward")
 
@@ -206,11 +206,6 @@ void faster_gs::rasterization::backward(
             bias_correction2_sqrt_rcp
         );
         CHECK_CUDA(config::debug, "adam_step_invisible (sh_coefficients_rest)")
-
-        // V7: advance step counts for invisible Gaussians that received a full Adam update
-        kernels::backward::increment_step_counts_invisible<<<div_round_up(n_primitives, config::block_size_adam_step_invisible), config::block_size_adam_step_invisible>>>(
-            primitive_buffers.n_touched_tiles, step_counts, n_primitives);
-        CHECK_CUDA(config::debug, "increment_step_counts_invisible")
     } else {
         // V6 #13: low-resolution phase — decay moments for invisible Gaussians without
         // updating parameters.  This prevents stale momentum from causing directional

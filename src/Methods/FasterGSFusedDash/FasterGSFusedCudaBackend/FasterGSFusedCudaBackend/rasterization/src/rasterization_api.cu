@@ -4,6 +4,7 @@
 #include "torch_utils.h"
 #include "rasterization_config.h"
 #include "helper_math.h"
+#include <cuda_fp16.h>
 #include <stdexcept>
 #include <functional>
 #include <tuple>
@@ -90,7 +91,6 @@ faster_gs::rasterization::forward_wrapper(
 
 void faster_gs::rasterization::backward_wrapper(
     torch::Tensor& densification_info,
-    torch::Tensor& step_counts,
     torch::Tensor& means,
     torch::Tensor& scales,
     torch::Tensor& rotations,
@@ -131,17 +131,18 @@ void faster_gs::rasterization::backward_wrapper(
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
+    const torch::TensorOptions half_options  = torch::TensorOptions().dtype(torch::kHalf).device(torch::kCUDA);
     torch::Tensor grad_colors = torch::zeros({n_primitives, 3}, float_options);
-    torch::Tensor grad_opacities = torch::zeros({n_primitives, 1}, float_options); // TODO: fuse into grad_conic_helper
-    torch::Tensor grad_mean2d_helper = torch::zeros({n_primitives, 2}, float_options);
-    torch::Tensor grad_conic_helper = torch::zeros({3, n_primitives}, float_options);
+    // V8: intermediate buffers in fp16 — halve bandwidth between blend_backward and preprocess_backward
+    torch::Tensor grad_opacities    = torch::zeros({n_primitives, 1}, half_options);
+    torch::Tensor grad_mean2d_helper = torch::zeros({n_primitives, 2}, half_options);
+    torch::Tensor grad_conic_helper  = torch::zeros({3, n_primitives}, half_options);
 
     const bool update_densification_info = densification_info.size(0) > 0;
 
     backward(
         grad_image.contiguous().data_ptr<float>(),
         image.data_ptr<float>(),
-        step_counts.data_ptr<int>(),
         reinterpret_cast<float3*>(means.data_ptr<float>()),
         reinterpret_cast<float3*>(scales.data_ptr<float>()),
         reinterpret_cast<float4*>(rotations.data_ptr<float>()),
@@ -161,10 +162,10 @@ void faster_gs::rasterization::backward_wrapper(
         reinterpret_cast<char*>(tile_buffers.data_ptr()),
         reinterpret_cast<char*>(instance_buffers.data_ptr()),
         reinterpret_cast<char*>(bucket_buffers.data_ptr()),
-        reinterpret_cast<float*>(grad_opacities.data_ptr<float>()),
+        reinterpret_cast<__half*>(grad_opacities.data_ptr<at::Half>()),
         reinterpret_cast<float3*>(grad_colors.data_ptr<float>()),
-        reinterpret_cast<float2*>(grad_mean2d_helper.data_ptr<float>()),
-        grad_conic_helper.data_ptr<float>(),
+        reinterpret_cast<__half2*>(grad_mean2d_helper.data_ptr<at::Half>()),
+        reinterpret_cast<__half*>(grad_conic_helper.data_ptr<at::Half>()),
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,
         n_primitives,
         n_instances,
