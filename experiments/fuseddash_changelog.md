@@ -274,6 +274,22 @@ n_budget = min(int(cur_n * (1 + densify_rate) - post_prune_n), post_prune_n)
 - PSNR 最大缺口：stump -0.43，其余 -0.04~-0.23
 - 注：早期 V3/V4 记录的 stump -0.36 是 3 runs 的乐观估计，12+ runs 后收敛到 -0.43
 
+### FusedDash V4 vs FasterGSFused（speed-quality trade-off）
+
+FusedDash = FasterGSFused + DashGaussian 调度，代价是 PSNR 略降，收益是 outdoor 场景大幅提速。
+
+| 场景 | PSNR 代价 | 速度收益 | 显存收益 |
+|------|----------|---------|---------|
+| bonsai | -0.11 dB | -11% (慢) | -0.20G |
+| counter | -0.04 dB | ±0 | -0.06G |
+| kitchen | -0.23 dB | -2% (慢) | -0.04G |
+| room | -0.14 dB | +9% (快) | -0.13G |
+| bicycle | -0.18 dB | **+25%** | **-0.64G** |
+| garden | -0.07 dB | **+26%** | **-0.54G** |
+| stump | -0.40 dB | **+26%** | **-0.53G** |
+
+FusedDash 的加速主要来自 DashGaussian 的渐进分辨率调度（少渲染大量低分辨率帧），在 outdoor 大场景效果最显著。indoor 小场景因为低分辨率带来的 overhead 不如质量损失划算，速度反而略逊。
+
 ### V1→V4 累计改进（大样本修正）
 
 | 场景 | V1 | V4 (大样本) | 改进 |
