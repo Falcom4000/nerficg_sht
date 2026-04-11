@@ -8,7 +8,6 @@ namespace faster_gs::rasterization {
     void backward(
         const float* grad_image,
         const float* image,
-        int* step_counts,
         float3* means,
         float3* scales,
         float4* rotations,

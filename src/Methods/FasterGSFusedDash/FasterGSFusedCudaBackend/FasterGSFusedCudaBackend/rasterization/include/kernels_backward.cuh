@@ -25,7 +25,6 @@ namespace faster_gs::rasterization::kernels::backward {
         float2* __restrict__ moments_opacities,
         float2* __restrict__ moments_sh_coefficients_0,
         float2* __restrict__ moments_sh_coefficients_rest,
-        int* __restrict__ step_counts,
         const float4* __restrict__ w2c,
         const float3* __restrict__ cam_position,
         const uint* __restrict__ primitive_n_touched_tiles,
@@ -43,27 +42,26 @@ namespace faster_gs::rasterization::kernels::backward {
         const float focal_y,
         const float center_x,
         const float center_y,
-        const float current_mean_lr)
+        const float step_size_means,
+        const float bias_correction1_rcp,
+        const float bias_correction2_sqrt_rcp)
     {
         const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (primitive_idx >= n_primitives || primitive_n_touched_tiles[primitive_idx] == 0) return;
 
-        // V7: per-Gaussian Adam step count for accurate bias correction.
-        // Each Gaussian tracks its own number of Adam updates, so newly created Gaussians
-        // (even those created late in training) get proper bias correction from step 1,
-        // not the inflated correction from the global iteration counter.
-        const int t = atomicAdd(&step_counts[primitive_idx], 1) + 1;  // post-increment → t >= 1
-        float eff_bc1_rcp, eff_bc2_sqrt_rcp;
-        if (t < config::step_count_stable_threshold) {
-            const float tf = (float)t;
-            eff_bc1_rcp       = 1.0f / (1.0f - expf(tf * config::log_beta1));
-            eff_bc2_sqrt_rcp  = rsqrtf(1.0f - expf(tf * config::log_beta2));
-        } else {
-            // For t >= 1000: beta^t < 2e-46, bias correction = 1.0 to machine precision
-            eff_bc1_rcp      = 1.0f;
-            eff_bc2_sqrt_rcp = 1.0f;
+        // Cold primitive detection: newly created Gaussians have all-zero moments.
+        // Use t=1 bias correction instead of the (much weaker) global-step correction
+        // to match PyTorch Adam's per-parameter step-count semantics and avoid the
+        // 3.16x first-step amplification for late-created Gaussians.
+        const float2 _cold_check = moments_means[primitive_idx * 3];
+        float eff_bc1_rcp = bias_correction1_rcp;
+        float eff_bc2_sqrt_rcp = bias_correction2_sqrt_rcp;
+        float eff_step_size_means = step_size_means;
+        if (_cold_check.x == 0.0f && _cold_check.y == 0.0f) {
+            eff_bc1_rcp = 1.0f / (1.0f - config::beta1);
+            eff_bc2_sqrt_rcp = rsqrtf(1.0f - config::beta2);
+            eff_step_size_means = (step_size_means / bias_correction1_rcp) * eff_bc1_rcp;
         }
-        const float eff_step_size_means = current_mean_lr * eff_bc1_rcp;
 
         const float step_size_opacities = config::lr_opacities * eff_bc1_rcp;
         adam_step_helper<1, 0>(grad_opacities[primitive_idx], opacities, moments_opacities, primitive_idx, step_size_opacities, eff_bc2_sqrt_rcp);
@@ -492,20 +490,6 @@ namespace faster_gs::rasterization::kernels::backward {
         const float denom = sqrtf(new_moments.y) * bias_correction2_sqrt_rcp + config::epsilon;
         param[idx] -= step_size * new_moments.x / denom;
         moments[idx] = new_moments;
-    }
-
-    // V7: increment step counts for invisible Gaussians that receive a full Adam update
-    // (apply_invisible_momentum=True, i.e., full-resolution training).  Their step count
-    // must advance even though their gradient is zero so that bias correction stays
-    // consistent with the visible path.
-    __global__ void increment_step_counts_invisible(
-        const uint* __restrict__ primitive_n_touched_tiles,
-        int* __restrict__ step_counts,
-        const int n_primitives)
-    {
-        const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
-        if (primitive_idx >= (uint)n_primitives || primitive_n_touched_tiles[primitive_idx] != 0) return;
-        atomicAdd(&step_counts[primitive_idx], 1);
     }
 
     // V6 #13: decay moments for invisible Gaussians without updating parameters.

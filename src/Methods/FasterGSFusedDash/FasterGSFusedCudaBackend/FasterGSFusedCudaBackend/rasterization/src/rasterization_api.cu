@@ -90,7 +90,6 @@ faster_gs::rasterization::forward_wrapper(
 
 void faster_gs::rasterization::backward_wrapper(
     torch::Tensor& densification_info,
-    torch::Tensor& step_counts,
     torch::Tensor& means,
     torch::Tensor& scales,
     torch::Tensor& rotations,
@@ -141,7 +140,6 @@ void faster_gs::rasterization::backward_wrapper(
     backward(
         grad_image.contiguous().data_ptr<float>(),
         image.data_ptr<float>(),
-        step_counts.data_ptr<int>(),
         reinterpret_cast<float3*>(means.data_ptr<float>()),
         reinterpret_cast<float3*>(scales.data_ptr<float>()),
         reinterpret_cast<float4*>(rotations.data_ptr<float>()),
