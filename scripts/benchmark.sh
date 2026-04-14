@@ -28,25 +28,28 @@ RESULTS_FILE="experiments/benchmark_results.md"
 # ── method metadata ───────────────────────────────────────────────────────────
 # config dir and output dir prefix for each method key
 declare -A METHOD_CONFIG_DIR=(
+    [gaussiansplatting]="configs/benchmark/gaussiansplatting"
     [fastergs]="configs/benchmark/fastergs"
     [fastergsfused]="configs/benchmark/fastergsfused"
     [fastergsdash]="configs/benchmark/fastergsdash"
     [fastergsfuseddash]="configs/benchmark/fastergsfuseddash"
 )
 declare -A METHOD_OUTPUT_DIR=(
+    [gaussiansplatting]="output/GaussianSplatting"
     [fastergs]="output/FasterGS"
     [fastergsfused]="output/FasterGSFused"
     [fastergsdash]="output/FasterGSDash"
     [fastergsfuseddash]="output/FasterGSFusedDash"
 )
 declare -A METHOD_DISPLAY=(
+    [gaussiansplatting]="GaussianSplatting"
     [fastergs]="FasterGS"
     [fastergsfused]="FasterGSFused"
     [fastergsdash]="FasterGSDash"
     [fastergsfuseddash]="FasterGSFusedDash"
 )
 
-ALL_METHODS=(fastergs fastergsfused fastergsdash fastergsfuseddash)
+ALL_METHODS=(gaussiansplatting fastergs fastergsfused fastergsdash fastergsfuseddash)
 ALL_SCENES=(bonsai counter kitchen room bicycle garden stump)
 
 # ── defaults ──────────────────────────────────────────────────────────────────

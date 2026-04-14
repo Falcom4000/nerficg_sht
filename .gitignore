@@ -22,3 +22,4 @@ backup/
 imgui.ini
 __pycache__/
 *.pyc
+output/*
