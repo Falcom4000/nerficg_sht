@@ -513,15 +513,16 @@ namespace faster_gs::rasterization::kernels::forward {
                 const float2 delta = collected_mean2d[j] - pixel;
                 const float exponent = -0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) - conic.y * delta.x * delta.y;
                 const float gaussian = expf(fminf(exponent, 0.0f));
-                const float alpha = opacity * gaussian;
+                const float alpha = fminf(0.99f, opacity * gaussian);
                 if (alpha < config::min_alpha_threshold) continue;
 
-                atomicAdd(accum_metric_counts + collected_primitive_idx[j], 1);
-                transmittance *= 1.0f - alpha;
-                if (transmittance < config::transmittance_threshold) {
+                const float next_transmittance = transmittance * (1.0f - alpha);
+                if (next_transmittance < config::transmittance_threshold) {
                     done = true;
                     continue;
                 }
+                atomicAdd(accum_metric_counts + collected_primitive_idx[j], 1);
+                transmittance = next_transmittance;
             }
         }
     }

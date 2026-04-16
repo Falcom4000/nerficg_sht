@@ -394,12 +394,11 @@ class Gaussians(torch.nn.Module):
             scores = 1.0 - pruning_score.reshape(-1).to(dtype=torch.float32)
             padded_weights = torch.zeros_like(prune_mask, dtype=torch.float32, device='cuda')
             n_scored = min(scores.shape[0], padded_weights.shape[0])
-            padded_weights[:n_scored] = 1.0 / scores[:n_scored].clamp_min(1e-6)
-            weights = torch.where(prune_mask, padded_weights, torch.zeros_like(padded_weights))
-            positive_weights = weights > 0
+            padded_weights[:n_scored] = 1.0 / (scores[:n_scored] + 1e-6)
+            positive_weights = padded_weights > 0
             valid_budget = min(remove_budget, int(positive_weights.sum().item()))
             if valid_budget > 0:
-                sampled_indices = torch.multinomial(weights, valid_budget, replacement=False)
+                sampled_indices = torch.multinomial(padded_weights, valid_budget, replacement=False)
                 selected_pts_mask = torch.zeros_like(prune_mask, dtype=torch.bool, device='cuda')
                 selected_pts_mask[sampled_indices] = True
                 self.prune(torch.logical_and(prune_mask, selected_pts_mask))
