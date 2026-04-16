@@ -528,6 +528,11 @@ class Gaussians(torch.nn.Module):
         split_candidates = int(torch.logical_and(metric_mask, all_splits).sum().item())
         cloned = self.densify_and_clone_fastgs(metric_mask, all_clones)
         split_children = self.densify_and_split_fastgs(metric_mask, all_splits)
+        # FastGS always recreates optimizer parameters during the densify paths, even
+        # when the selected masks are empty. That drops the current-step gradients and
+        # clears screen-space size history before the prune stage.
+        self.reset_gradient_accumulators()
+        self.reset_max_radii2D()
 
         prune_mask = (self.opacities < min_opacity).flatten()
         low_opacity_prune = int(prune_mask.sum().item())

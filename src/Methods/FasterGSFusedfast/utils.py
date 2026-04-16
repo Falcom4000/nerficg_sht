@@ -8,6 +8,7 @@ import random
 import torch
 
 from Datasets.Base import BaseDataset
+from Datasets.utils import apply_background_color
 from Logging import Logger
 from Optim.Losses.DSSIM import fused_dssim
 
@@ -100,6 +101,8 @@ def compute_gaussian_scores_fastgs(
         view_bg_color = bg_color.to(device=view.rgb.device, dtype=torch.float32)
         rendered_image = renderer.render_image_inference(view, to_chw=True, clamp_output=False, bg_color=view_bg_color)['rgb']
         target_image = view.rgb
+        if (alpha_gt := view.alpha) is not None:
+            target_image = apply_background_color(target_image, alpha_gt, view_bg_color)
 
         photometric_loss = compute_photometric_loss(rendered_image, target_image, lambda_dssim)
         metric_map = compute_metric_map(rendered_image, target_image, loss_thresh)

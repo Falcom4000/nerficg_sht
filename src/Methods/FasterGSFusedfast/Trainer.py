@@ -6,7 +6,7 @@ import torch
 
 import Framework
 from Datasets.Base import BaseDataset
-from Datasets.utils import BasicPointCloud
+from Datasets.utils import BasicPointCloud, apply_background_color
 from Logging import Logger
 from Methods.Base.GuiTrainer import GuiTrainer
 from Methods.Base.utils import pre_training_callback, training_callback, post_training_callback
@@ -224,17 +224,24 @@ class FasterGSFusedTrainer(GuiTrainer):
         update_now = optimization_step % 64 == 0
         return update_now, update_now
 
-    @training_callback(priority=110, start_iteration=1000, iteration_stride=1000)
+    @training_callback(priority=110)
     @torch.no_grad()
-    def increase_sh_degree(self, *_) -> None:
+    def increase_sh_degree(self, iteration: int, *_) -> None:
         """Increase the number of used SH coefficients up to a maximum degree."""
+        if (iteration + 1) % 1000 != 0:
+            return
         self.model.gaussians.increase_used_sh_degree()
 
-    @training_callback(priority=100, start_iteration='DENSIFICATION_START_ITERATION', end_iteration='DENSIFICATION_END_ITERATION', iteration_stride='DENSIFICATION_INTERVAL')
+    @training_callback(priority=100)
     @torch.no_grad()
     def densify(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Apply densification."""
-        if iteration <= self.DENSIFICATION_START_ITERATION or iteration % self.DENSIFICATION_INTERVAL != 0:
+        optimization_step = iteration + 1
+        if (
+            optimization_step <= self.DENSIFICATION_START_ITERATION or
+            optimization_step > self.DENSIFICATION_END_ITERATION or
+            optimization_step % self.DENSIFICATION_INTERVAL != 0
+        ):
             return
         importance_score, pruning_score = compute_gaussian_scores_fastgs(
             dataset=dataset.train(),
@@ -253,7 +260,7 @@ class FasterGSFusedTrainer(GuiTrainer):
             importance_score=importance_score,
             pruning_score=pruning_score,
             importance_threshold=self.FASTGS_IMPORTANCE_THRESHOLD,
-            max_screen_size=20.0 if iteration > self.OPACITY_RESET_INTERVAL else None,
+            max_screen_size=20.0 if optimization_step > self.OPACITY_RESET_INTERVAL else None,
         )
         self._record_training_event(iteration, 'densify', self.model.gaussians.last_adaptive_density_control_stats)
         self._collect_training_snapshot(iteration, 'after_densify')
@@ -262,39 +269,56 @@ class FasterGSFusedTrainer(GuiTrainer):
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
 
-    @training_callback(priority=99, end_iteration='MORTON_ORDERING_END_ITERATION', iteration_stride='MORTON_ORDERING_INTERVAL')
+    @training_callback(priority=99)
     @torch.no_grad()
-    def morton_ordering(self, *_) -> None:
+    def morton_ordering(self, iteration: int, *_) -> None:
         """Apply morton ordering to all Gaussian parameters and their optimizer states."""
+        optimization_step = iteration + 1
+        if (
+            optimization_step > self.MORTON_ORDERING_END_ITERATION or
+            optimization_step % self.MORTON_ORDERING_INTERVAL != 0
+        ):
+            return
         self.model.gaussians.apply_morton_ordering()
 
-    @training_callback(priority=90, start_iteration='OPACITY_RESET_INTERVAL', end_iteration='DENSIFICATION_END_ITERATION', iteration_stride='OPACITY_RESET_INTERVAL')
+    @training_callback(priority=90)
     @torch.no_grad()
     def reset_opacities(self, iteration: int, *_) -> None:
         """Reset opacities."""
+        optimization_step = iteration + 1
+        if (
+            optimization_step < self.OPACITY_RESET_INTERVAL or
+            optimization_step > self.DENSIFICATION_END_ITERATION or
+            optimization_step % self.OPACITY_RESET_INTERVAL != 0
+        ):
+            return
         self.model.gaussians.reset_opacities()
         self._record_training_event(iteration, 'opacity_reset', self.model.gaussians.last_opacity_reset_stats)
         self._collect_training_snapshot(iteration, 'after_opacity_reset')
 
-    @training_callback(priority=90, start_iteration='EXTRA_OPACITY_RESET_ITERATION', end_iteration='EXTRA_OPACITY_RESET_ITERATION')
+    @training_callback(priority=90)
     @torch.no_grad()
     def reset_opacities_extra(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Reset opacities one additional time when using a white background."""
+        if iteration + 1 != self.EXTRA_OPACITY_RESET_ITERATION:
+            return
         if torch.allclose(dataset.default_camera.background_color, torch.ones_like(dataset.default_camera.background_color)):
             Logger.log_info('resetting opacities one additional time because using white background')
             self.model.gaussians.reset_opacities()
             self._record_training_event(iteration, 'opacity_reset_extra', self.model.gaussians.last_opacity_reset_stats)
             self._collect_training_snapshot(iteration, 'after_opacity_reset_extra')
 
-    @training_callback(
-        priority=95,
-        start_iteration='FASTGS_FINAL_PRUNE_START_ITERATION',
-        end_iteration='FASTGS_FINAL_PRUNE_END_ITERATION',
-        iteration_stride='FASTGS_FINAL_PRUNE_INTERVAL',
-    )
+    @training_callback(priority=95)
     @torch.no_grad()
     def fastgs_final_prune(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Apply the late-stage FastGS multi-view consistent pruning schedule."""
+        optimization_step = iteration + 1
+        if (
+            optimization_step < self.FASTGS_FINAL_PRUNE_START_ITERATION or
+            optimization_step > self.FASTGS_FINAL_PRUNE_END_ITERATION or
+            optimization_step % self.FASTGS_FINAL_PRUNE_INTERVAL != 0
+        ):
+            return
         _, pruning_score = compute_gaussian_scores_fastgs(
             dataset=dataset.train(),
             renderer=self.renderer,
@@ -343,6 +367,8 @@ class FasterGSFusedTrainer(GuiTrainer):
             )
         # calculate loss
         rgb_gt = view.rgb
+        if (alpha_gt := view.alpha) is not None:
+            rgb_gt = apply_background_color(rgb_gt, alpha_gt, bg_color)
         loss = self.loss(image, rgb_gt) + 0.0 * autograd_dummy
         # backward
         loss.backward()
