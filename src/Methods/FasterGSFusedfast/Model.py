@@ -328,7 +328,10 @@ class Gaussians(torch.nn.Module):
 
     def densify_and_split_fastgs(self, metric_mask: torch.Tensor, candidate_mask: torch.Tensor, n_splits: int = 2) -> int:
         """FastGS split path: replace large high-score Gaussians with multiple children."""
-        selected_pts_mask = torch.logical_and(metric_mask, candidate_mask)
+        n_init_points = self._means.shape[0]
+        base_mask = torch.logical_and(metric_mask, candidate_mask)
+        selected_pts_mask = torch.zeros((n_init_points,), dtype=torch.bool, device='cuda')
+        selected_pts_mask[:base_mask.shape[0]] = base_mask
         n_selected = int(selected_pts_mask.sum().item())
         if n_selected == 0:
             return 0

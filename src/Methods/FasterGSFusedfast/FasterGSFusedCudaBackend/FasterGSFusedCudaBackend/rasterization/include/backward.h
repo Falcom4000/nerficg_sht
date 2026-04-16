@@ -29,7 +29,7 @@ namespace faster_gs::rasterization {
         char* bucket_buffers_blob,
         float* grad_opacities,
         float3* grad_colors,
-        float2* grad_mean2d_helper,
+        float4* grad_mean2d_helper,
         float* grad_conic_helper,
         float* densification_info,
         const int n_primitives,

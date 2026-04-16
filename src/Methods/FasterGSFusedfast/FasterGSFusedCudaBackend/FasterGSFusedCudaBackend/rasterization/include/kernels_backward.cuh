@@ -28,7 +28,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const float4* __restrict__ w2c,
         const float3* __restrict__ cam_position,
         const uint* __restrict__ primitive_n_touched_tiles,
-        const float2* __restrict__ grad_mean2d,
+        const float4* __restrict__ grad_mean2d,
         const float* __restrict__ grad_conic,
         const float* __restrict__ grad_opacities,
         const float3* __restrict__ grad_colors,
@@ -171,7 +171,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const float dL_dj23 = w2c_r3.x * dL_djw_r2.x + w2c_r3.y * dL_djw_r2.y + w2c_r3.z * dL_djw_r2.z;
 
         // load gradient of 2d mean
-        const float2 dL_dmean2d = grad_mean2d[primitive_idx];
+        const float4 dL_dmean2d = grad_mean2d[primitive_idx];
 
         // for adaptive density control
         if (densification_info != nullptr) {
@@ -180,10 +180,14 @@ namespace faster_gs::rasterization::kernels::backward {
                 dL_dmean2d.x * width,
                 dL_dmean2d.y * height
             );
+            const float2 dL_dmean2d_ndc_abs = 0.5f * make_float2(
+                dL_dmean2d.z * width,
+                dL_dmean2d.w * height
+            );
             densification_info[n_primitives + primitive_idx] += dL_dmean2d_ndc.x;
             densification_info[2 * n_primitives + primitive_idx] += dL_dmean2d_ndc.y;
-            densification_info[3 * n_primitives + primitive_idx] += fabsf(dL_dmean2d_ndc.x);
-            densification_info[4 * n_primitives + primitive_idx] += fabsf(dL_dmean2d_ndc.y);
+            densification_info[3 * n_primitives + primitive_idx] += dL_dmean2d_ndc_abs.x;
+            densification_info[4 * n_primitives + primitive_idx] += dL_dmean2d_ndc_abs.y;
         }
 
         // mean3d camera space gradient from mean2d
@@ -267,7 +271,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const uint* __restrict__ tile_n_processed,
         const uint* __restrict__ bucket_tile_index,
         const float4* __restrict__ bucket_color_transmittance,
-        float2* __restrict__ grad_mean2d,
+        float4* __restrict__ grad_mean2d,
         float* __restrict__ grad_conic,
         float* __restrict__ grad_opacity,
         float3* __restrict__ grad_colors,
@@ -317,7 +321,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const uint n_pixels = width * height;
 
         // gradient accumulation
-        float2 dL_dmean2d_accum = {0.0f, 0.0f};
+        float4 dL_dmean2d_accum = {0.0f, 0.0f, 0.0f, 0.0f};
         float3 dL_dconic_accum = {0.0f, 0.0f, 0.0f};
         float dL_dopacity_accum = 0.0f;
         float3 dL_dcolor_accum = {0.0f, 0.0f, 0.0f};
@@ -443,7 +447,10 @@ namespace faster_gs::rasterization::kernels::backward {
                 conic.x * delta.x + conic.y * delta.y,
                 conic.y * delta.x + conic.z * delta.y
             );
-            dL_dmean2d_accum += dL_dmean2d;
+            dL_dmean2d_accum.x += dL_dmean2d.x;
+            dL_dmean2d_accum.y += dL_dmean2d.y;
+            dL_dmean2d_accum.z += fabsf(dL_dmean2d.x);
+            dL_dmean2d_accum.w += fabsf(dL_dmean2d.y);
 
             transmittance *= one_minus_alpha;
         }
@@ -452,6 +459,8 @@ namespace faster_gs::rasterization::kernels::backward {
         if (valid_primitive) {
             atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d_accum.x);
             atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d_accum.y);
+            atomicAdd(&grad_mean2d[primitive_idx].z, dL_dmean2d_accum.z);
+            atomicAdd(&grad_mean2d[primitive_idx].w, dL_dmean2d_accum.w);
             atomicAdd(&grad_conic[primitive_idx], dL_dconic_accum.x);
             atomicAdd(&grad_conic[n_primitives + primitive_idx], dL_dconic_accum.y);
             atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], dL_dconic_accum.z);
