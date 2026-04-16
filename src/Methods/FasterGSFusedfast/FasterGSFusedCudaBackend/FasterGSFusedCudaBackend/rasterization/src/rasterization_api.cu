@@ -8,7 +8,7 @@
 #include <functional>
 #include <tuple>
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
 faster_gs::rasterization::forward_wrapper(
     const torch::Tensor& means,
     const torch::Tensor& scales,
@@ -44,6 +44,7 @@ faster_gs::rasterization::forward_wrapper(
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
     const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
     torch::Tensor image = torch::empty({3, height, width}, float_options);
+    torch::Tensor radii = torch::zeros({n_primitives}, float_options);
     torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
     torch::Tensor tile_buffers = torch::empty({0}, byte_options);
     torch::Tensor instance_buffers = torch::empty({0}, byte_options);
@@ -68,6 +69,7 @@ faster_gs::rasterization::forward_wrapper(
         reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
         reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
         image.data_ptr<float>(),
+        radii.data_ptr<float>(),
         n_primitives,
         active_sh_bases,
         total_sh_bases,
@@ -82,7 +84,7 @@ faster_gs::rasterization::forward_wrapper(
     );
 
     return {
-        image,
+        image, radii,
         primitive_buffers, tile_buffers, instance_buffers, bucket_buffers,
         n_instances, n_buckets, instance_primitive_indices_selector
     };
@@ -138,6 +140,7 @@ faster_gs::rasterization::score_forward_wrapper(
     const torch::TensorOptions int_options = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
     torch::Tensor image = torch::empty({0}, float_options);
     torch::Tensor accum_metric_counts = torch::zeros({n_primitives}, int_options);
+    torch::Tensor radii_scratch = torch::zeros({n_primitives}, float_options);
     torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
     torch::Tensor tile_buffers = torch::empty({0}, byte_options);
     torch::Tensor instance_buffers = torch::empty({0}, byte_options);
@@ -159,6 +162,7 @@ faster_gs::rasterization::score_forward_wrapper(
         reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
         metric_map.data_ptr<int>(),
         accum_metric_counts.data_ptr<int>(),
+        radii_scratch.data_ptr<float>(),
         n_primitives,
         active_sh_bases,
         total_sh_bases,
@@ -178,11 +182,17 @@ faster_gs::rasterization::score_forward_wrapper(
 void faster_gs::rasterization::backward_wrapper(
     torch::Tensor& densification_info,
     torch::Tensor& means,
+    torch::Tensor& grad_accum_means,
     torch::Tensor& scales,
+    torch::Tensor& grad_accum_scales,
     torch::Tensor& rotations,
+    torch::Tensor& grad_accum_rotations,
     torch::Tensor& opacities,
+    torch::Tensor& grad_accum_opacities,
     torch::Tensor& sh_coefficients_0,
+    torch::Tensor& grad_accum_sh_coefficients_0,
     torch::Tensor& sh_coefficients_rest,
+    torch::Tensor& grad_accum_sh_coefficients_rest,
     torch::Tensor& moments_means,
     torch::Tensor& moments_scales,
     torch::Tensor& moments_rotations,
@@ -212,7 +222,9 @@ void faster_gs::rasterization::backward_wrapper(
     const int n_instances,
     const int n_buckets,
     const int instance_primitive_indices_selector,
-    const bool apply_invisible_momentum)
+    const int adam_step_count_sh,
+    const bool apply_parameter_updates,
+    const bool update_sh_coefficients)
 {
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
@@ -228,11 +240,17 @@ void faster_gs::rasterization::backward_wrapper(
         grad_image.contiguous().data_ptr<float>(),
         image.data_ptr<float>(),
         reinterpret_cast<float3*>(means.data_ptr<float>()),
+        reinterpret_cast<float3*>(grad_accum_means.data_ptr<float>()),
         reinterpret_cast<float3*>(scales.data_ptr<float>()),
+        reinterpret_cast<float3*>(grad_accum_scales.data_ptr<float>()),
         reinterpret_cast<float4*>(rotations.data_ptr<float>()),
+        reinterpret_cast<float4*>(grad_accum_rotations.data_ptr<float>()),
         opacities.data_ptr<float>(),
+        grad_accum_opacities.data_ptr<float>(),
         reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
+        reinterpret_cast<float3*>(grad_accum_sh_coefficients_0.data_ptr<float>()),
         reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
+        reinterpret_cast<float3*>(grad_accum_sh_coefficients_rest.data_ptr<float>()),
         reinterpret_cast<float2*>(moments_means.data_ptr<float>()),
         reinterpret_cast<float2*>(moments_scales.data_ptr<float>()),
         reinterpret_cast<float2*>(moments_rotations.data_ptr<float>()),
@@ -265,7 +283,9 @@ void faster_gs::rasterization::backward_wrapper(
         center_y,
         current_mean_lr,
         adam_step_count,
-        apply_invisible_momentum
+        adam_step_count_sh,
+        apply_parameter_updates,
+        update_sh_coefficients
     );
 
 }

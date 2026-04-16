@@ -46,11 +46,17 @@ class _Rasterize(torch.autograd.Function):
         ctx: Any,
         autograd_dummy: torch.Tensor,
         means: torch.Tensor,
+        grad_accum_means: torch.Tensor,
         scales: torch.Tensor,
+        grad_accum_scales: torch.Tensor,
         rotations: torch.Tensor,
+        grad_accum_rotations: torch.Tensor,
         opacities: torch.Tensor,
+        grad_accum_opacities: torch.Tensor,
         sh_coefficients_0: torch.Tensor,
+        grad_accum_sh_coefficients_0: torch.Tensor,
         sh_coefficients_rest: torch.Tensor,
+        grad_accum_sh_coefficients_rest: torch.Tensor,
         moments_means: torch.Tensor,
         moments_scales: torch.Tensor,
         moments_rotations: torch.Tensor,
@@ -59,10 +65,12 @@ class _Rasterize(torch.autograd.Function):
         moments_sh_coefficients_rest: torch.Tensor,
         densification_info: torch.Tensor,
         rasterizer_settings: RasterizerSettings,
-        apply_invisible_momentum: bool,
-    ) -> 'tuple[torch.Tensor, torch.Tensor]':
+        adam_step_count_sh: int,
+        apply_parameter_updates: bool,
+        update_sh_coefficients: bool,
+    ) -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor]':
         (
-            image,
+            image, radii,
             primitive_buffers, tile_buffers, instance_buffers, bucket_buffers,
             n_instances, n_buckets, instance_primitive_indices_selector
         ) = _C.forward(
@@ -75,7 +83,9 @@ class _Rasterize(torch.autograd.Function):
             *rasterizer_settings.as_tuple(),
         )
         ctx.rasterizer_settings = rasterizer_settings
-        ctx.apply_invisible_momentum = apply_invisible_momentum
+        ctx.adam_step_count_sh = adam_step_count_sh
+        ctx.apply_parameter_updates = apply_parameter_updates
+        ctx.update_sh_coefficients = update_sh_coefficients
         ctx.buffer_state = (n_instances, n_buckets, instance_primitive_indices_selector)
         ctx.save_for_backward(
             image,
@@ -85,11 +95,17 @@ class _Rasterize(torch.autograd.Function):
             bucket_buffers,
         )
         ctx.means = means
+        ctx.grad_accum_means = grad_accum_means
         ctx.scales = scales
+        ctx.grad_accum_scales = grad_accum_scales
         ctx.rotations = rotations
+        ctx.grad_accum_rotations = grad_accum_rotations
         ctx.opacities = opacities
+        ctx.grad_accum_opacities = grad_accum_opacities
         ctx.sh_coefficients_0 = sh_coefficients_0
+        ctx.grad_accum_sh_coefficients_0 = grad_accum_sh_coefficients_0
         ctx.sh_coefficients_rest = sh_coefficients_rest
+        ctx.grad_accum_sh_coefficients_rest = grad_accum_sh_coefficients_rest
         ctx.moments_means = moments_means
         ctx.moments_scales = moments_scales
         ctx.moments_rotations = moments_rotations
@@ -98,11 +114,17 @@ class _Rasterize(torch.autograd.Function):
         ctx.moments_sh_coefficients_rest = moments_sh_coefficients_rest
         ctx.densification_info = densification_info
         ctx.mark_non_differentiable(means)
+        ctx.mark_non_differentiable(grad_accum_means)
         ctx.mark_non_differentiable(scales)
+        ctx.mark_non_differentiable(grad_accum_scales)
         ctx.mark_non_differentiable(rotations)
+        ctx.mark_non_differentiable(grad_accum_rotations)
         ctx.mark_non_differentiable(opacities)
+        ctx.mark_non_differentiable(grad_accum_opacities)
         ctx.mark_non_differentiable(sh_coefficients_0)
+        ctx.mark_non_differentiable(grad_accum_sh_coefficients_0)
         ctx.mark_non_differentiable(sh_coefficients_rest)
+        ctx.mark_non_differentiable(grad_accum_sh_coefficients_rest)
         ctx.mark_non_differentiable(moments_means)
         ctx.mark_non_differentiable(moments_scales)
         ctx.mark_non_differentiable(moments_rotations)
@@ -110,23 +132,31 @@ class _Rasterize(torch.autograd.Function):
         ctx.mark_non_differentiable(moments_sh_coefficients_0)
         ctx.mark_non_differentiable(moments_sh_coefficients_rest)
         ctx.mark_non_differentiable(densification_info)
-        return image, autograd_dummy
+        ctx.mark_non_differentiable(radii)
+        return image, radii, autograd_dummy
 
     @staticmethod
     @once_differentiable
     def backward(
         ctx: Any,
         grad_image: torch.Tensor,
-        _,
-    ) -> 'tuple[None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]':
+        _grad_radii,
+        _grad_dummy,
+    ) -> 'tuple[None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]':
         _C.backward(
             ctx.densification_info,
             ctx.means,
+            ctx.grad_accum_means,
             ctx.scales,
+            ctx.grad_accum_scales,
             ctx.rotations,
+            ctx.grad_accum_rotations,
             ctx.opacities,
+            ctx.grad_accum_opacities,
             ctx.sh_coefficients_0,
+            ctx.grad_accum_sh_coefficients_0,
             ctx.sh_coefficients_rest,
+            ctx.grad_accum_sh_coefficients_rest,
             ctx.moments_means,
             ctx.moments_scales,
             ctx.moments_rotations,
@@ -137,16 +167,24 @@ class _Rasterize(torch.autograd.Function):
             *ctx.saved_tensors,
             *ctx.rasterizer_settings.as_tuple(),
             *ctx.buffer_state,
-            ctx.apply_invisible_momentum,
+            ctx.adam_step_count_sh,
+            ctx.apply_parameter_updates,
+            ctx.update_sh_coefficients,
         )
         return (
             None,  # autograd_dummy
             None,  # means
+            None,  # grad_accum_means
             None,  # scales
+            None,  # grad_accum_scales
             None,  # rotations
+            None,  # grad_accum_rotations
             None,  # opacities
+            None,  # grad_accum_opacities
             None,  # sh_coefficients_0
+            None,  # grad_accum_sh_coefficients_0
             None,  # sh_coefficients_rest
+            None,  # grad_accum_sh_coefficients_rest
             None,  # moments_means
             None,  # moments_scales
             None,  # moments_rotations
@@ -155,7 +193,9 @@ class _Rasterize(torch.autograd.Function):
             None,  # moments_sh_coefficients_rest
             None,  # densification_info
             None,  # rasterizer_settings
-            None,  # apply_invisible_momentum
+            None,  # adam_step_count_sh
+            None,  # apply_parameter_updates
+            None,  # update_sh_coefficients
         )
 
 
@@ -169,22 +209,36 @@ def diff_rasterize(
     sh_coefficients_rest: torch.Tensor,
     densification_info: torch.Tensor,
     rasterizer_settings: RasterizerSettings,
+    grad_accum_means: torch.Tensor,
+    grad_accum_scales: torch.Tensor,
+    grad_accum_rotations: torch.Tensor,
+    grad_accum_opacities: torch.Tensor,
+    grad_accum_sh_coefficients_0: torch.Tensor,
+    grad_accum_sh_coefficients_rest: torch.Tensor,
     moments_means: torch.Tensor = None,
     moments_scales: torch.Tensor = None,
     moments_rotations: torch.Tensor = None,
     moments_opacities: torch.Tensor = None,
     moments_sh_coefficients_0: torch.Tensor = None,
     moments_sh_coefficients_rest: torch.Tensor = None,
-    apply_invisible_momentum: bool = True,
+    adam_step_count_sh: int = 0,
+    apply_parameter_updates: bool = True,
+    update_sh_coefficients: bool = True,
 ) -> torch.Tensor:
     return _Rasterize.apply(
         autograd_dummy,
         means,
+        grad_accum_means,
         scales,
+        grad_accum_scales,
         rotations,
+        grad_accum_rotations,
         opacities,
+        grad_accum_opacities,
         sh_coefficients_0,
+        grad_accum_sh_coefficients_0,
         sh_coefficients_rest,
+        grad_accum_sh_coefficients_rest,
         torch.empty(0) if moments_means is None else moments_means,
         torch.empty(0) if moments_scales is None else moments_scales,
         torch.empty(0) if moments_rotations is None else moments_rotations,
@@ -193,7 +247,9 @@ def diff_rasterize(
         torch.empty(0) if moments_sh_coefficients_rest is None else moments_sh_coefficients_rest,
         densification_info,
         rasterizer_settings,
-        apply_invisible_momentum,
+        adam_step_count_sh,
+        apply_parameter_updates,
+        update_sh_coefficients,
     )
 
 

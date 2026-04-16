@@ -4,7 +4,7 @@ import torch
 
 import Framework
 from Datasets.Base import BaseDataset
-from Datasets.utils import BasicPointCloud, apply_background_color
+from Datasets.utils import BasicPointCloud
 from Logging import Logger
 from Methods.Base.GuiTrainer import GuiTrainer
 from Methods.Base.utils import pre_training_callback, training_callback, post_training_callback
@@ -15,12 +15,13 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
 
 @Framework.Configurable.configure(
     NUM_ITERATIONS=30_000,
-    DENSIFICATION_START_ITERATION=500,
+    DENSIFICATION_START_ITERATION=600,
     DENSIFICATION_END_ITERATION=14_900,  # while official code states 15000, densification actually stops at 14900 there
-    DENSIFICATION_INTERVAL=500,
+    DENSIFICATION_INTERVAL=100,
     DENSIFICATION_GRAD_THRESHOLD=0.0002,
     DENSIFICATION_GRAD_ABS_THRESHOLD=0.0012,
     DENSIFICATION_PERCENT_DENSE=0.001,
+    FASTGS_DENSE_THRESHOLD=0.001,
     FASTGS_IMPORTANCE_THRESHOLD=5,
     FASTGS_SCORE_VIEWS=10,
     FASTGS_LOSS_THRESHOLD=0.1,
@@ -49,6 +50,11 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         LEARNING_RATE_MEANS_INIT=0.00016,
         LEARNING_RATE_MEANS_FINAL=0.0000016,
         LEARNING_RATE_MEANS_MAX_STEPS=30_000,
+        LEARNING_RATE_SH_COEFFICIENTS_0=0.0025,
+        LEARNING_RATE_SH_COEFFICIENTS_REST=0.00025,
+        LEARNING_RATE_OPACITIES=0.025,
+        LEARNING_RATE_SCALES=0.005,
+        LEARNING_RATE_ROTATIONS=0.001,
     ),
 )
 class FasterGSFusedTrainer(GuiTrainer):
@@ -64,6 +70,13 @@ class FasterGSFusedTrainer(GuiTrainer):
         self.train_sampler = None
         self.loss = FasterGSFusedLoss(loss_config=self.LOSS)
         self.autograd_dummy = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32, device='cuda'))
+        self.fastgs_background_color = None
+        self.fastgs_main_step_count = 0
+        self.fastgs_sh_step_count = 0
+        for optimization_step in range(1, self.model.num_iterations_trained + 1):
+            update_main, update_sh = self._fastgs_update_schedule(optimization_step)
+            self.fastgs_main_step_count += int(update_main)
+            self.fastgs_sh_step_count += int(update_sh)
 
     @pre_training_callback(priority=50)
     @torch.no_grad()
@@ -91,6 +104,20 @@ class FasterGSFusedTrainer(GuiTrainer):
         self.model.gaussians.initialize_from_point_cloud(point_cloud)
         self.model.gaussians.training_setup(self, radius)
         self.model.gaussians.reset_densification_info()
+        self.model.gaussians.reset_max_radii2D()
+        default_background = dataset.default_camera.background_color.to(device='cuda', dtype=torch.float32)
+        self.fastgs_background_color = torch.rand_like(default_background) if self.USE_RANDOM_BACKGROUND_COLOR else default_background
+
+    @staticmethod
+    def _fastgs_update_schedule(optimization_step: int) -> tuple[bool, bool]:
+        """Return FastGS update gates for main params and SH params."""
+        if optimization_step <= 15_000:
+            return True, optimization_step % 16 == 0
+        if optimization_step <= 20_000:
+            update_now = optimization_step % 32 == 0
+            return update_now, update_now
+        update_now = optimization_step % 64 == 0
+        return update_now, update_now
 
     @training_callback(priority=110, start_iteration=1000, iteration_stride=1000)
     @torch.no_grad()
@@ -102,12 +129,15 @@ class FasterGSFusedTrainer(GuiTrainer):
     @torch.no_grad()
     def densify(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Apply densification."""
+        if iteration <= self.DENSIFICATION_START_ITERATION or iteration % self.DENSIFICATION_INTERVAL != 0:
+            return
         importance_score, pruning_score = compute_gaussian_scores_fastgs(
             dataset=dataset.train(),
             renderer=self.renderer,
             num_views=self.FASTGS_SCORE_VIEWS,
             loss_thresh=self.FASTGS_LOSS_THRESHOLD,
             lambda_dssim=self.LOSS.LAMBDA_DSSIM,
+            bg_color=self.fastgs_background_color,
         )
         if importance_score is None or pruning_score is None:
             return
@@ -118,7 +148,7 @@ class FasterGSFusedTrainer(GuiTrainer):
             importance_score=importance_score,
             pruning_score=pruning_score,
             importance_threshold=self.FASTGS_IMPORTANCE_THRESHOLD,
-            prune_large_gaussians=iteration > self.OPACITY_RESET_INTERVAL,
+            max_screen_size=20.0 if iteration > self.OPACITY_RESET_INTERVAL else None,
         )
         if iteration < self.DENSIFICATION_END_ITERATION:
             self.model.gaussians.reset_densification_info()
@@ -141,9 +171,8 @@ class FasterGSFusedTrainer(GuiTrainer):
     @torch.no_grad()
     def reset_opacities_extra(self, _, dataset: 'BaseDataset') -> None:
         """Reset opacities one additional time when using a white background."""
-        # original implementation only supports black or white background, this is an attempt to make it work with any color
-        if dataset.default_camera.background_color.sum() != 0.0:
-            Logger.log_info('resetting opacities one additional time because using non-black background')
+        if torch.allclose(dataset.default_camera.background_color, torch.ones_like(dataset.default_camera.background_color)):
+            Logger.log_info('resetting opacities one additional time because using white background')
             self.model.gaussians.reset_opacities()
 
     @training_callback(
@@ -161,6 +190,7 @@ class FasterGSFusedTrainer(GuiTrainer):
             num_views=self.FASTGS_SCORE_VIEWS,
             loss_thresh=self.FASTGS_LOSS_THRESHOLD,
             lambda_dssim=self.LOSS.LAMBDA_DSSIM,
+            bg_color=self.fastgs_background_color,
         )
         if pruning_score is None:
             return
@@ -168,7 +198,7 @@ class FasterGSFusedTrainer(GuiTrainer):
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
 
-    @training_callback(priority=80)
+    @training_callback(priority=105)
     def training_iteration(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Performs a training step without actually doing the optimizer step."""
         # init modes
@@ -181,22 +211,46 @@ class FasterGSFusedTrainer(GuiTrainer):
         # get random view
         view = self.train_sampler.get(dataset=dataset)['view']
         # render
-        bg_color = torch.rand_like(view.camera.background_color) if self.USE_RANDOM_BACKGROUND_COLOR else view.camera.background_color
-        image, autograd_dummy = self.renderer.render_image_training(
+        bg_color = self.fastgs_background_color
+        image, radii, autograd_dummy = self.renderer.render_image_training(
             view=view,
             update_densification_info=iteration < self.DENSIFICATION_END_ITERATION,
             bg_color=bg_color,
-            adam_step_count=optimization_step,
+            adam_step_count_main=0,
+            adam_step_count_sh=0,
+            apply_parameter_updates=False,
+            update_sh_coefficients=False,
             autograd_dummy=self.autograd_dummy,
         )
+        if iteration < self.DENSIFICATION_END_ITERATION:
+            visibility_filter = radii > 0
+            self.model.gaussians.max_radii2D[visibility_filter] = torch.maximum(
+                self.model.gaussians.max_radii2D[visibility_filter],
+                radii[visibility_filter],
+            )
         # calculate loss
-        # compose gt with background color if needed  # FIXME: integrate into data model
         rgb_gt = view.rgb
-        if (alpha_gt := view.alpha) is not None:
-            rgb_gt = apply_background_color(rgb_gt, alpha_gt, bg_color)
         loss = self.loss(image, rgb_gt) + 0.0 * autograd_dummy
         # backward
         loss.backward()
+
+    @training_callback(priority=85)
+    @torch.no_grad()
+    def optimizer_step_fastgs(self, iteration: int, _) -> None:
+        """Apply FastGS optimizer updates after densify/prune/reset callbacks."""
+        optimization_step = iteration + 1
+        if optimization_step >= self.NUM_ITERATIONS:
+            return
+        apply_parameter_updates, update_sh_coefficients = self._fastgs_update_schedule(optimization_step)
+        adam_step_count_main = None
+        adam_step_count_sh = None
+        if apply_parameter_updates:
+            self.fastgs_main_step_count += 1
+            adam_step_count_main = self.fastgs_main_step_count
+        if update_sh_coefficients:
+            self.fastgs_sh_step_count += 1
+            adam_step_count_sh = self.fastgs_sh_step_count
+        self.model.gaussians.optimizer_step_fastgs(adam_step_count_main, adam_step_count_sh)
 
     @training_callback(active='WANDB.ACTIVATE', priority=10, iteration_stride='WANDB.INTERVAL')
     @torch.no_grad()

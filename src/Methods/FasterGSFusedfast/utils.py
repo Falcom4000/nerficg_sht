@@ -8,7 +8,6 @@ import random
 import torch
 
 from Datasets.Base import BaseDataset
-from Datasets.utils import apply_background_color
 from Logging import Logger
 from Optim.Losses.DSSIM import fused_dssim
 
@@ -88,6 +87,7 @@ def compute_gaussian_scores_fastgs(
     num_views: int,
     loss_thresh: float,
     lambda_dssim: float,
+    bg_color: torch.Tensor,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     """Compute FastGS-style multi-view importance and pruning scores."""
     sampled_views = sample_training_views(dataset, num_views)
@@ -97,15 +97,13 @@ def compute_gaussian_scores_fastgs(
     full_metric_counts = None
     full_metric_score = None
     for view in sampled_views:
-        bg_color = view.camera.background_color.to(device=view.rgb.device, dtype=torch.float32)
-        rendered_image = renderer.render_image_inference(view, to_chw=True)['rgb']
+        view_bg_color = bg_color.to(device=view.rgb.device, dtype=torch.float32)
+        rendered_image = renderer.render_image_inference(view, to_chw=True, clamp_output=False, bg_color=view_bg_color)['rgb']
         target_image = view.rgb
-        if (alpha_gt := view.alpha) is not None:
-            target_image = apply_background_color(target_image, alpha_gt, bg_color)
 
         photometric_loss = compute_photometric_loss(rendered_image, target_image, lambda_dssim)
         metric_map = compute_metric_map(rendered_image, target_image, loss_thresh)
-        metric_counts = renderer.render_image_scoring(view, bg_color, metric_map).to(dtype=torch.float32)
+        metric_counts = renderer.render_image_scoring(view, view_bg_color, metric_map).to(dtype=torch.float32)
 
         if full_metric_counts is None:
             full_metric_counts = metric_counts.clone()

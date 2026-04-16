@@ -29,6 +29,7 @@ namespace faster_gs::rasterization::kernels::forward {
         float3* __restrict__ primitive_color,
         uint* __restrict__ n_visible_primitives,
         uint* __restrict__ n_instances,
+        float* __restrict__ primitive_radii,
         const uint n_primitives,
         const uint grid_width,
         const uint grid_height,
@@ -55,7 +56,10 @@ namespace faster_gs::rasterization::kernels::forward {
             primitive_idx = n_primitives - 1;
         }
 
-        if (active) primitive_n_touched_tiles[primitive_idx] = 0;
+        if (active) {
+            primitive_n_touched_tiles[primitive_idx] = 0;
+            primitive_radii[primitive_idx] = 0.0f;
+        }
 
         // load 3d mean
         const float3 mean3d = means[primitive_idx];
@@ -140,6 +144,9 @@ namespace faster_gs::rasterization::kernels::forward {
         cov2d.z += config::dilation;
         const float determinant = cov2d.x * cov2d.z - cov2d.y * cov2d.y;
         if (determinant < config::min_cov2d_determinant) active = false; // or (determinant <= 0.0f) with explicit handling in backward
+        const float mid = 0.5f * (cov2d.x + cov2d.z);
+        const float lambda_disc = fmaxf(0.1f, mid * mid - determinant);
+        const float radius = ceilf(3.0f * sqrtf(fmaxf(mid + sqrtf(lambda_disc), 0.0f)));
         const float3 conic = make_float3(
             cov2d.z / determinant,
             -cov2d.y / determinant,
@@ -188,6 +195,7 @@ namespace faster_gs::rasterization::kernels::forward {
         );
         primitive_mean2d[primitive_idx] = mean2d;
         primitive_conic_opacity[primitive_idx] = make_float4(conic, opacity);
+        primitive_radii[primitive_idx] = radius;
         const float3 color = convert_sh_to_color(
             sh_coefficients_0, sh_coefficients_rest,
             mean3d, cam_position[0],

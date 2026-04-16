@@ -9,11 +9,17 @@ namespace faster_gs::rasterization {
         const float* grad_image,
         const float* image,
         float3* means,
+        float3* grad_accum_means,
         float3* scales,
+        float3* grad_accum_scales,
         float4* rotations,
+        float4* grad_accum_rotations,
         float* opacities,
+        float* grad_accum_opacities,
         float3* sh_coefficients_0,
+        float3* grad_accum_sh_coefficients_0,
         float3* sh_coefficients_rest,
+        float3* grad_accum_sh_coefficients_rest,
         float2* moments_means,
         float2* moments_scales,
         float2* moments_rotations,
@@ -45,7 +51,9 @@ namespace faster_gs::rasterization {
         const float center_x,
         const float center_y,
         const float current_mean_lr,
-        const int adam_step_count,
-        const bool apply_invisible_momentum);
+        const int adam_step_count_main,
+        const int adam_step_count_sh,
+        const bool apply_parameter_updates,
+        const bool update_sh_coefficients);
 
 }

@@ -177,8 +177,10 @@ namespace faster_gs::rasterization::kernels {
         float2* moments,
         const uint primitive_idx,
         const float step_size,
-        const float bias_correction2_sqrt_rcp)
+        const float bias_correction2_sqrt_rcp,
+        const bool apply_update = true)
     {
+        if (!apply_update || step_size == 0.0f) return;
         const uint element_idx = primitive_idx * n_attributes + offset;
         const float2 moment = moments[element_idx];
         const float grad_sq = grad * grad;

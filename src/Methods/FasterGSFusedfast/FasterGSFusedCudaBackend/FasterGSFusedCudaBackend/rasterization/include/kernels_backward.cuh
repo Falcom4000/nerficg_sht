@@ -14,17 +14,17 @@ namespace faster_gs::rasterization::kernels::backward {
 
     __global__ void preprocess_backward_cu(
         float3* __restrict__ means,
+        float3* __restrict__ grad_accum_means,
         float3* __restrict__ scales,
+        float3* __restrict__ grad_accum_scales,
         float4* __restrict__ rotations,
+        float4* __restrict__ grad_accum_rotations,
         float* __restrict__ opacities,
+        float* __restrict__ grad_accum_opacities,
         float3* __restrict__ sh_coefficients_0,
+        float3* __restrict__ grad_accum_sh_coefficients_0,
         float3* __restrict__ sh_coefficients_rest,
-        float2* __restrict__ moments_means,
-        float2* __restrict__ moments_scales,
-        float2* __restrict__ moments_rotations,
-        float2* __restrict__ moments_opacities,
-        float2* __restrict__ moments_sh_coefficients_0,
-        float2* __restrict__ moments_sh_coefficients_rest,
+        float3* __restrict__ grad_accum_sh_coefficients_rest,
         const float4* __restrict__ w2c,
         const float3* __restrict__ cam_position,
         const uint* __restrict__ primitive_n_touched_tiles,
@@ -41,16 +41,11 @@ namespace faster_gs::rasterization::kernels::backward {
         const float focal_x,
         const float focal_y,
         const float center_x,
-        const float center_y,
-        const float step_size_means,
-        const float bias_correction1_rcp,
-        const float bias_correction2_sqrt_rcp)
+        const float center_y)
     {
         const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (primitive_idx >= n_primitives || primitive_n_touched_tiles[primitive_idx] == 0) return;
-
-        const float step_size_opacities = config::lr_opacities * bias_correction1_rcp;
-        adam_step_helper<1, 0>(grad_opacities[primitive_idx], opacities, moments_opacities, primitive_idx, step_size_opacities, bias_correction2_sqrt_rcp);
+        grad_accum_opacities[primitive_idx] += grad_opacities[primitive_idx];
 
         // load 3d mean
         const float3 mean3d = means[primitive_idx];
@@ -58,11 +53,10 @@ namespace faster_gs::rasterization::kernels::backward {
         // sh evaluation backward
         const float3 dL_dmean3d_from_color = convert_sh_to_color_backward(
             sh_coefficients_0, sh_coefficients_rest,
-            moments_sh_coefficients_0, moments_sh_coefficients_rest,
+            grad_accum_sh_coefficients_0, grad_accum_sh_coefficients_rest,
             grad_colors,
             mean3d, cam_position[0], primitive_idx,
-            active_sh_bases, total_sh_bases,
-            bias_correction1_rcp, bias_correction2_sqrt_rcp
+            active_sh_bases, total_sh_bases
         );
 
         const float4 w2c_r3 = w2c[2];
@@ -215,9 +209,7 @@ namespace faster_gs::rasterization::kernels::backward {
 
         // meand3d gradient
         const float3 dL_dmean3d = dL_dmean3d_from_splatting + dL_dmean3d_from_color;
-        adam_step_helper<3, 0>(dL_dmean3d.x, reinterpret_cast<float*>(means), moments_means, primitive_idx, step_size_means, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 1>(dL_dmean3d.y, reinterpret_cast<float*>(means), moments_means, primitive_idx, step_size_means, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 2>(dL_dmean3d.z, reinterpret_cast<float*>(means), moments_means, primitive_idx, step_size_means, bias_correction2_sqrt_rcp);
+        grad_accum_means[primitive_idx] += dL_dmean3d;
 
         // scale gradient
         const float3 dL_dvariance = make_float3(
@@ -229,10 +221,7 @@ namespace faster_gs::rasterization::kernels::backward {
                 2.0f * (R.m13 * R.m23 * dL_dcov3d.m12 + R.m13 * R.m33 * dL_dcov3d.m13 + R.m23 * R.m33 * dL_dcov3d.m23)
         );
         const float3 dL_dscale = 2.0f * variance * dL_dvariance;
-        const float step_size_scales = config::lr_scales * bias_correction1_rcp;
-        adam_step_helper<3, 0>(dL_dscale.x, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 1>(dL_dscale.y, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, bias_correction2_sqrt_rcp);
-        adam_step_helper<3, 2>(dL_dscale.z, reinterpret_cast<float*>(scales), moments_scales, primitive_idx, step_size_scales, bias_correction2_sqrt_rcp);
+        grad_accum_scales[primitive_idx] += dL_dscale;
 
         // rotation gradient
         const mat3x3 dL_dR = {
@@ -247,11 +236,7 @@ namespace faster_gs::rasterization::kernels::backward {
             2.0f * (RSS.m13 * dL_dcov3d.m13 + RSS.m23 * dL_dcov3d.m23 + RSS.m33 * dL_dcov3d.m33)
         };
         const float4 dL_drotation = convert_quaternion_to_rotation_matrix_backward(raw_rotation, dL_dR);
-        const float step_size_rotations = config::lr_rotations * bias_correction1_rcp;
-        adam_step_helper<4, 0>(dL_drotation.x, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
-        adam_step_helper<4, 1>(dL_drotation.y, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
-        adam_step_helper<4, 2>(dL_drotation.z, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
-        adam_step_helper<4, 3>(dL_drotation.w, reinterpret_cast<float*>(rotations), moments_rotations, primitive_idx, step_size_rotations, bias_correction2_sqrt_rcp);
+        grad_accum_rotations[primitive_idx] += dL_drotation;
 
     }
 
@@ -473,21 +458,26 @@ namespace faster_gs::rasterization::kernels::backward {
     }
 
     template <uint n_attributes>
-    __global__ void adam_step_invisible(
-        const uint* __restrict__ primitive_n_touched_tiles,
+    __global__ void adam_step_accum(
         float* __restrict__ param,
+        float* __restrict__ grad_accum,
         float2* __restrict__ moments,
         const int n_elements,
         const float step_size,
         const float bias_correction2_sqrt_rcp)
     {
         const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        const uint primitive_idx = idx / n_attributes;
-        if (idx >= n_elements || primitive_n_touched_tiles[primitive_idx] != 0) return;
-        const float2 new_moments = moments[idx] * make_float2(config::beta1, config::beta2);
+        if (idx >= n_elements) return;
+        const float grad = grad_accum[idx];
+        const float2 moment = moments[idx];
+        const float grad_sq = grad * grad;
+        const float moment1 = fmaf(config::beta1, moment.x - grad, grad);
+        const float moment2 = fmaf(config::beta2, moment.y - grad_sq, grad_sq);
+        const float2 new_moments = make_float2(moment1, moment2);
         const float denom = sqrtf(new_moments.y) * bias_correction2_sqrt_rcp + config::epsilon;
         param[idx] -= step_size * new_moments.x / denom;
         moments[idx] = new_moments;
+        grad_accum[idx] = 0.0f;
     }
 
 }

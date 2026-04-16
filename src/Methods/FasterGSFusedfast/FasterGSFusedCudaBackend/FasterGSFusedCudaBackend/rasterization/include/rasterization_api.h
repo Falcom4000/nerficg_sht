@@ -5,7 +5,7 @@
 
 namespace faster_gs::rasterization {
 
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
     forward_wrapper(
         const torch::Tensor& means,
         const torch::Tensor& scales,
@@ -55,11 +55,17 @@ namespace faster_gs::rasterization {
     void backward_wrapper(
         torch::Tensor& densification_info,
         torch::Tensor& means,
+        torch::Tensor& grad_accum_means,
         torch::Tensor& scales,
+        torch::Tensor& grad_accum_scales,
         torch::Tensor& rotations,
+        torch::Tensor& grad_accum_rotations,
         torch::Tensor& opacities,
+        torch::Tensor& grad_accum_opacities,
         torch::Tensor& sh_coefficients_0,
+        torch::Tensor& grad_accum_sh_coefficients_0,
         torch::Tensor& sh_coefficients_rest,
+        torch::Tensor& grad_accum_sh_coefficients_rest,
         torch::Tensor& moments_means,
         torch::Tensor& moments_scales,
         torch::Tensor& moments_rotations,
@@ -89,6 +95,8 @@ namespace faster_gs::rasterization {
         const int n_instances,
         const int n_buckets,
         const int instance_primitive_indices_selector,
-        const bool apply_invisible_momentum = true);
+        const int adam_step_count_sh,
+        const bool apply_parameter_updates,
+        const bool update_sh_coefficients);
 
 }

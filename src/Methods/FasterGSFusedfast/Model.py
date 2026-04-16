@@ -30,10 +30,17 @@ class Gaussians(torch.nn.Module):
         self.register_buffer('_rotations', None)
         self.register_buffer('_opacities', None)
         self._densification_info = None
+        self.max_radii2D = torch.empty(0)
         self.percent_dense = 0.0
+        self.fastgs_dense = 0.0
         self.training_cameras_extent = 1.0
         self.lr_means = 0.0
         self.lr_means_scheduler = None
+        self.lr_sh_coefficients_0 = 0.0
+        self.lr_sh_coefficients_rest = 0.0
+        self.lr_opacities = 0.0
+        self.lr_scales = 0.0
+        self.lr_rotations = 0.0
         # adam moments
         self.moments_means = torch.empty(0)
         self.moments_sh_coefficients_0 = torch.empty(0)
@@ -41,6 +48,12 @@ class Gaussians(torch.nn.Module):
         self.moments_scales = torch.empty(0)
         self.moments_rotations = torch.empty(0)
         self.moments_opacities = torch.empty(0)
+        self.grad_accum_means = torch.empty(0)
+        self.grad_accum_sh_coefficients_0 = torch.empty(0)
+        self.grad_accum_sh_coefficients_rest = torch.empty(0)
+        self.grad_accum_scales = torch.empty(0)
+        self.grad_accum_rotations = torch.empty(0)
+        self.grad_accum_opacities = torch.empty(0)
 
     @property
     def means(self) -> torch.Tensor:
@@ -138,6 +151,7 @@ class Gaussians(torch.nn.Module):
         self._scales = scales.contiguous()
         self._rotations = rotations.contiguous()
         self._opacities = opacities.contiguous()
+        self.max_radii2D = torch.zeros((n_initial_gaussians,), dtype=torch.float32, device='cuda')
         # setup adam moments
         self.moments_means = torch.zeros(*self.means.shape, 2, dtype=torch.float32, device='cuda')
         self.moments_sh_coefficients_0 = torch.zeros(*self._sh_coefficients_0.shape, 2, dtype=torch.float32, device='cuda')
@@ -145,10 +159,17 @@ class Gaussians(torch.nn.Module):
         self.moments_scales = torch.zeros(*self._scales.shape, 2, dtype=torch.float32, device='cuda')
         self.moments_rotations = torch.zeros(*self._rotations.shape, 2, dtype=torch.float32, device='cuda')
         self.moments_opacities = torch.zeros(*self._opacities.shape, 2, dtype=torch.float32, device='cuda')
+        self.grad_accum_means = torch.zeros_like(self._means)
+        self.grad_accum_sh_coefficients_0 = torch.zeros_like(self._sh_coefficients_0)
+        self.grad_accum_sh_coefficients_rest = torch.zeros_like(self._sh_coefficients_rest)
+        self.grad_accum_scales = torch.zeros_like(self._scales)
+        self.grad_accum_rotations = torch.zeros_like(self._rotations)
+        self.grad_accum_opacities = torch.zeros_like(self._opacities)
 
     def training_setup(self, training_wrapper, training_cameras_extent: float) -> None:
         """Sets up the optimizer."""
         self.percent_dense = training_wrapper.DENSIFICATION_PERCENT_DENSE
+        self.fastgs_dense = training_wrapper.FASTGS_DENSE_THRESHOLD
         self.training_cameras_extent = training_cameras_extent
 
         self.lr_means = training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_INIT * self.training_cameras_extent
@@ -157,6 +178,11 @@ class Gaussians(torch.nn.Module):
             lr_final=training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_FINAL * self.training_cameras_extent,
             max_steps=training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_MAX_STEPS
         )
+        self.lr_sh_coefficients_0 = training_wrapper.OPTIMIZER.LEARNING_RATE_SH_COEFFICIENTS_0
+        self.lr_sh_coefficients_rest = training_wrapper.OPTIMIZER.LEARNING_RATE_SH_COEFFICIENTS_REST
+        self.lr_opacities = training_wrapper.OPTIMIZER.LEARNING_RATE_OPACITIES
+        self.lr_scales = training_wrapper.OPTIMIZER.LEARNING_RATE_SCALES
+        self.lr_rotations = training_wrapper.OPTIMIZER.LEARNING_RATE_ROTATIONS
 
     def update_learning_rate(self, iteration: int) -> None:
         """Computes the current learning rate for the given iteration."""
@@ -166,6 +192,20 @@ class Gaussians(torch.nn.Module):
         """Resets the opacities to a fixed value."""
         self._opacities.clamp_max_(-4.595119953155518)  # sigmoid(-4.595119953155518) = 0.01
         self.moments_opacities.zero_()
+        self.grad_accum_opacities.zero_()
+
+    def reset_max_radii2D(self) -> None:
+        """Reset FastGS-style screen-space size tracking."""
+        self.max_radii2D = torch.zeros((self._means.shape[0],), dtype=torch.float32, device='cuda')
+
+    def reset_gradient_accumulators(self) -> None:
+        """Match PyTorch optimizer semantics after tensor replacement/reordering."""
+        self.grad_accum_means.zero_()
+        self.grad_accum_sh_coefficients_0.zero_()
+        self.grad_accum_sh_coefficients_rest.zero_()
+        self.grad_accum_scales.zero_()
+        self.grad_accum_rotations.zero_()
+        self.grad_accum_opacities.zero_()
 
     def prune(self, prune_mask: torch.Tensor) -> None:
         """Prunes Gaussians that are not visible or too large."""
@@ -184,9 +224,17 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = self.moments_opacities[valid_mask].contiguous()
         self.moments_scales = self.moments_scales[valid_mask].contiguous()
         self.moments_rotations = self.moments_rotations[valid_mask].contiguous()
+        self.grad_accum_means = self.grad_accum_means[valid_mask].contiguous()
+        self.grad_accum_sh_coefficients_0 = self.grad_accum_sh_coefficients_0[valid_mask].contiguous()
+        self.grad_accum_sh_coefficients_rest = self.grad_accum_sh_coefficients_rest[valid_mask].contiguous()
+        self.grad_accum_opacities = self.grad_accum_opacities[valid_mask].contiguous()
+        self.grad_accum_scales = self.grad_accum_scales[valid_mask].contiguous()
+        self.grad_accum_rotations = self.grad_accum_rotations[valid_mask].contiguous()
+        self.max_radii2D = self.max_radii2D[valid_mask].contiguous()
 
         if self._densification_info is not None:
             self._densification_info = self._densification_info[:, valid_mask].contiguous()
+        self.reset_gradient_accumulators()
 
     def sort(self, ordering: torch.Tensor) -> None:
         """Applies the given ordering to the Gaussians."""
@@ -203,6 +251,13 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = self.moments_opacities[ordering].contiguous()
         self.moments_scales = self.moments_scales[ordering].contiguous()
         self.moments_rotations = self.moments_rotations[ordering].contiguous()
+        self.grad_accum_means = self.grad_accum_means[ordering].contiguous()
+        self.grad_accum_sh_coefficients_0 = self.grad_accum_sh_coefficients_0[ordering].contiguous()
+        self.grad_accum_sh_coefficients_rest = self.grad_accum_sh_coefficients_rest[ordering].contiguous()
+        self.grad_accum_opacities = self.grad_accum_opacities[ordering].contiguous()
+        self.grad_accum_scales = self.grad_accum_scales[ordering].contiguous()
+        self.grad_accum_rotations = self.grad_accum_rotations[ordering].contiguous()
+        self.max_radii2D = self.max_radii2D[ordering].contiguous()
 
         if self._densification_info is not None:
             self._densification_info = self._densification_info[:, ordering].contiguous()
@@ -246,12 +301,20 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = torch.cat([self.moments_opacities, torch.zeros((n_new_gaussians, *self.moments_opacities.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_scales = torch.cat([self.moments_scales, torch.zeros((n_new_gaussians, *self.moments_scales.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_rotations = torch.cat([self.moments_rotations, torch.zeros((n_new_gaussians, *self.moments_rotations.shape[1:]), dtype=torch.float32, device='cuda')])
+        self.grad_accum_means = torch.cat([self.grad_accum_means, torch.zeros_like(means, dtype=torch.float32, device='cuda')])
+        self.grad_accum_sh_coefficients_0 = torch.cat([self.grad_accum_sh_coefficients_0, torch.zeros_like(sh_coefficients_0, dtype=torch.float32, device='cuda')])
+        self.grad_accum_sh_coefficients_rest = torch.cat([self.grad_accum_sh_coefficients_rest, torch.zeros_like(sh_coefficients_rest, dtype=torch.float32, device='cuda')])
+        self.grad_accum_opacities = torch.cat([self.grad_accum_opacities, torch.zeros_like(opacities, dtype=torch.float32, device='cuda')])
+        self.grad_accum_scales = torch.cat([self.grad_accum_scales, torch.zeros_like(scales, dtype=torch.float32, device='cuda')])
+        self.grad_accum_rotations = torch.cat([self.grad_accum_rotations, torch.zeros_like(rotations, dtype=torch.float32, device='cuda')])
+        self.max_radii2D = torch.cat([self.max_radii2D, torch.zeros((n_new_gaussians,), dtype=torch.float32, device='cuda')])
 
         if self._densification_info is not None:
             self._densification_info = torch.cat([
                 self._densification_info,
                 torch.zeros((self._densification_info.shape[0], n_new_gaussians), dtype=torch.float32, device='cuda'),
             ], dim=1)
+        self.reset_gradient_accumulators()
         return n_new_gaussians
 
     def _cap_opacities(self, max_opacity: float) -> None:
@@ -259,6 +322,73 @@ class Gaussians(torch.nn.Module):
         capped = self.opacities.clamp_max(max_opacity)
         self._opacities.data = torch.logit(capped.clamp(1e-6, 1.0 - 1e-6))
         self.moments_opacities.zero_()
+        self.grad_accum_opacities.zero_()
+
+    @staticmethod
+    def _adam_update(
+        param: torch.Tensor,
+        grad_accum: torch.Tensor,
+        moments: torch.Tensor,
+        learning_rate: float,
+        step_count: int,
+    ) -> None:
+        """Apply one in-place Adam update matching FastGS/PyTorch semantics."""
+        if step_count <= 0:
+            return
+        beta1 = 0.9
+        beta2 = 0.999
+        epsilon = 1e-15
+        exp_avg = moments[..., 0]
+        exp_avg_sq = moments[..., 1]
+        exp_avg.mul_(beta1).add_(grad_accum, alpha=1.0 - beta1)
+        exp_avg_sq.mul_(beta2).addcmul_(grad_accum, grad_accum, value=1.0 - beta2)
+        bias_correction1_rcp = 1.0 / (1.0 - beta1 ** step_count)
+        bias_correction2_sqrt_rcp = 1.0 / math.sqrt(1.0 - beta2 ** step_count)
+        denom = exp_avg_sq.sqrt().mul_(bias_correction2_sqrt_rcp).add_(epsilon)
+        param.addcdiv_(exp_avg, denom, value=-learning_rate * bias_correction1_rcp)
+        grad_accum.zero_()
+
+    @torch.no_grad()
+    def optimizer_step_fastgs(self, adam_step_count_main: int | None, adam_step_count_sh: int | None) -> None:
+        """Apply FastGS optimizer updates after prune/reset callbacks have run."""
+        if adam_step_count_main is not None:
+            self._adam_update(self._means, self.grad_accum_means, self.moments_means, self.lr_means, adam_step_count_main)
+            self._adam_update(
+                self._sh_coefficients_0,
+                self.grad_accum_sh_coefficients_0,
+                self.moments_sh_coefficients_0,
+                self.lr_sh_coefficients_0,
+                adam_step_count_main,
+            )
+            self._adam_update(
+                self._opacities,
+                self.grad_accum_opacities,
+                self.moments_opacities,
+                self.lr_opacities,
+                adam_step_count_main,
+            )
+            self._adam_update(
+                self._scales,
+                self.grad_accum_scales,
+                self.moments_scales,
+                self.lr_scales,
+                adam_step_count_main,
+            )
+            self._adam_update(
+                self._rotations,
+                self.grad_accum_rotations,
+                self.moments_rotations,
+                self.lr_rotations,
+                adam_step_count_main,
+            )
+        if adam_step_count_sh is not None:
+            self._adam_update(
+                self._sh_coefficients_rest,
+                self.grad_accum_sh_coefficients_rest,
+                self.moments_sh_coefficients_rest,
+                self.lr_sh_coefficients_rest,
+                adam_step_count_sh,
+            )
 
     def adaptive_density_control(self, grad_threshold: float, min_opacity: float, prune_large_gaussians: bool) -> None:
         """Densify Gaussians and prune those that are not visible or too large."""
@@ -367,13 +497,13 @@ class Gaussians(torch.nn.Module):
         importance_score: torch.Tensor,
         pruning_score: torch.Tensor,
         importance_threshold: int,
-        prune_large_gaussians: bool,
+        max_screen_size: float | None,
     ) -> None:
         """Apply FastGS-style densify/prune policy on top of the fused backend state."""
         grad_mean, grad_mean_abs = self._densification_grad_stats()
         grad_qualifiers = torch.norm(grad_mean, dim=1) >= grad_threshold
         grad_qualifiers_abs = torch.norm(grad_mean_abs, dim=1) >= grad_abs_threshold
-        size_threshold = self.percent_dense * self.training_cameras_extent
+        size_threshold = self.fastgs_dense * self.training_cameras_extent
         clone_qualifiers = torch.max(self.scales, dim=1).values <= size_threshold
         split_qualifiers = ~clone_qualifiers
         metric_mask = importance_score.reshape(-1) > importance_threshold
@@ -385,8 +515,8 @@ class Gaussians(torch.nn.Module):
         self.densify_and_split_fastgs(metric_mask, all_splits)
 
         prune_mask = (self.opacities < min_opacity).flatten()
-        prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
-        if prune_large_gaussians:
+        if max_screen_size is not None:
+            prune_mask |= self.max_radii2D > max_screen_size
             prune_mask |= self.scales.max(dim=1).values > 0.1 * self.training_cameras_extent
 
         remove_budget = int(0.5 * prune_mask.sum().item())
@@ -395,14 +525,13 @@ class Gaussians(torch.nn.Module):
             padded_weights = torch.zeros_like(prune_mask, dtype=torch.float32, device='cuda')
             n_scored = min(scores.shape[0], padded_weights.shape[0])
             padded_weights[:n_scored] = 1.0 / (scores[:n_scored] + 1e-6)
-            positive_weights = padded_weights > 0
-            valid_budget = min(remove_budget, int(positive_weights.sum().item()))
-            if valid_budget > 0:
-                sampled_indices = torch.multinomial(padded_weights, valid_budget, replacement=False)
+            if remove_budget > 0:
+                sampled_indices = torch.multinomial(padded_weights, remove_budget, replacement=False)
                 selected_pts_mask = torch.zeros_like(prune_mask, dtype=torch.bool, device='cuda')
                 selected_pts_mask[sampled_indices] = True
                 self.prune(torch.logical_and(prune_mask, selected_pts_mask))
 
+        self.reset_max_radii2D()
         self._cap_opacities(0.8)
 
     def final_prune_fastgs(self, min_opacity: float, pruning_score: torch.Tensor, score_threshold: float = 0.9) -> None:
@@ -438,6 +567,12 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = None
         self.moments_scales = None
         self.moments_rotations = None
+        self.grad_accum_means = None
+        self.grad_accum_sh_coefficients_0 = None
+        self.grad_accum_sh_coefficients_rest = None
+        self.grad_accum_opacities = None
+        self.grad_accum_scales = None
+        self.grad_accum_rotations = None
 
         return self.means.shape[0]
 
