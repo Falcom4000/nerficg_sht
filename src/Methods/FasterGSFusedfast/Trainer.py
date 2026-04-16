@@ -1,5 +1,7 @@
 """FasterGSFusedfast/Trainer.py"""
 
+from pathlib import Path
+
 import torch
 
 import Framework
@@ -33,6 +35,7 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
     FASTGS_FINAL_PRUNE_SCORE_THRESHOLD=0.9,
     MORTON_ORDERING_INTERVAL=5000,  # lowering to 2500 or 1000 may improve performance when number of Gaussians is high
     MORTON_ORDERING_END_ITERATION=15000,
+    DIAGNOSTICS_INTERVAL=1000,
     USE_RANDOM_BACKGROUND_COLOR=False,  # prevents the model from overfitting to the background color
     MIN_OPACITY_AFTER_TRAINING=1 / 255,
     RANDOM_INITIALIZATION=Framework.ConfigParameterList(
@@ -73,10 +76,99 @@ class FasterGSFusedTrainer(GuiTrainer):
         self.fastgs_background_color = None
         self.fastgs_main_step_count = 0
         self.fastgs_sh_step_count = 0
+        self.training_diagnostics_snapshots = []
+        self.training_diagnostics_events = []
         for optimization_step in range(1, self.model.num_iterations_trained + 1):
             update_main, update_sh = self._fastgs_update_schedule(optimization_step)
             self.fastgs_main_step_count += int(update_main)
             self.fastgs_sh_step_count += int(update_sh)
+
+    @staticmethod
+    def _format_diagnostic_mapping(mapping: dict) -> str:
+        """Format a flat diagnostic mapping into a stable one-line string."""
+        parts = []
+        for key, value in mapping.items():
+            if isinstance(value, float):
+                parts.append(f'{key}={value:.6g}')
+            else:
+                parts.append(f'{key}={value}')
+        return ', '.join(parts)
+
+    @torch.no_grad()
+    def _collect_training_snapshot(self, iteration: int, tag: str) -> None:
+        """Collect a compact state snapshot for later postmortem inspection."""
+        gaussians = self.model.gaussians
+        opacity = gaussians.opacities.reshape(-1)
+        max_scale = gaussians.scales.max(dim=1).values
+        max_radii = gaussians.max_radii2D if gaussians.max_radii2D.numel() > 0 else torch.zeros(1, device='cuda')
+        snapshot = {
+            'tag': tag,
+            'iteration': int(iteration),
+            'optimization_step': int(iteration + 1),
+            'n_gaussians': int(gaussians.means.shape[0]),
+            'active_sh_degree': int(gaussians.active_sh_degree),
+            'lr_means': float(gaussians.lr_means),
+            'lr_sh_rest': float(gaussians.lr_sh_coefficients_rest),
+            'lr_opacity': float(gaussians.lr_opacities),
+            'main_step_count': int(self.fastgs_main_step_count),
+            'sh_step_count': int(self.fastgs_sh_step_count),
+            'opacity_mean': float(opacity.mean().item()),
+            'opacity_median': float(opacity.median().item()),
+            'opacity_max': float(opacity.max().item()),
+            'scale_mean': float(max_scale.mean().item()),
+            'scale_median': float(max_scale.median().item()),
+            'scale_max': float(max_scale.max().item()),
+            'max_radii_mean': float(max_radii.mean().item()),
+            'max_radii_max': float(max_radii.max().item()),
+        }
+        densification_info = gaussians.densification_info
+        if densification_info is not None and densification_info.numel() > 0:
+            counts = densification_info[0]
+            snapshot['densify_seen_mean'] = float(counts.mean().item())
+            snapshot['densify_seen_max'] = float(counts.max().item())
+        self.training_diagnostics_snapshots.append(snapshot)
+
+    def _record_training_event(self, iteration: int, tag: str, stats: dict) -> None:
+        """Store a structured training event for later dump to text."""
+        event = {'tag': tag, 'iteration': int(iteration)}
+        event.update(stats)
+        self.training_diagnostics_events.append(event)
+
+    def _write_training_diagnostics(self, output_path: Path) -> None:
+        """Write collected diagnostics to a text report in the output directory."""
+        config_lines = [
+            '[Config]',
+            self._format_diagnostic_mapping({
+                'densify_start': self.DENSIFICATION_START_ITERATION,
+                'densify_end': self.DENSIFICATION_END_ITERATION,
+                'densify_interval': self.DENSIFICATION_INTERVAL,
+                'grad_threshold': self.DENSIFICATION_GRAD_THRESHOLD,
+                'grad_abs_threshold': self.DENSIFICATION_GRAD_ABS_THRESHOLD,
+                'percent_dense': self.DENSIFICATION_PERCENT_DENSE,
+                'fastgs_dense': self.FASTGS_DENSE_THRESHOLD,
+                'importance_threshold': self.FASTGS_IMPORTANCE_THRESHOLD,
+                'score_views': self.FASTGS_SCORE_VIEWS,
+                'loss_threshold': self.FASTGS_LOSS_THRESHOLD,
+                'opacity_reset_interval': self.OPACITY_RESET_INTERVAL,
+                'final_prune_start': self.FASTGS_FINAL_PRUNE_START_ITERATION,
+                'final_prune_end': self.FASTGS_FINAL_PRUNE_END_ITERATION,
+                'final_prune_interval': self.FASTGS_FINAL_PRUNE_INTERVAL,
+                'final_prune_score_threshold': self.FASTGS_FINAL_PRUNE_SCORE_THRESHOLD,
+                'diagnostics_interval': self.DIAGNOSTICS_INTERVAL,
+            }),
+            '',
+            '[Snapshots]',
+        ]
+        snapshot_lines = [self._format_diagnostic_mapping(snapshot) for snapshot in self.training_diagnostics_snapshots]
+        if not snapshot_lines:
+            snapshot_lines = ['<none>']
+        event_lines = ['',
+                       '[Events]']
+        event_lines.extend(self._format_diagnostic_mapping(event) for event in self.training_diagnostics_events)
+        if len(event_lines) == 2:
+            event_lines.append('<none>')
+        with open(output_path, 'w') as diagnostics_file:
+            diagnostics_file.write('\n'.join(config_lines + snapshot_lines + event_lines) + '\n')
 
     @pre_training_callback(priority=50)
     @torch.no_grad()
@@ -107,6 +199,7 @@ class FasterGSFusedTrainer(GuiTrainer):
         self.model.gaussians.reset_max_radii2D()
         default_background = dataset.default_camera.background_color.to(device='cuda', dtype=torch.float32)
         self.fastgs_background_color = torch.rand_like(default_background) if self.USE_RANDOM_BACKGROUND_COLOR else default_background
+        self._collect_training_snapshot(0, 'initial_setup')
 
     @staticmethod
     def _fastgs_update_schedule(optimization_step: int) -> tuple[bool, bool]:
@@ -150,6 +243,8 @@ class FasterGSFusedTrainer(GuiTrainer):
             importance_threshold=self.FASTGS_IMPORTANCE_THRESHOLD,
             max_screen_size=20.0 if iteration > self.OPACITY_RESET_INTERVAL else None,
         )
+        self._record_training_event(iteration, 'densify', self.model.gaussians.last_adaptive_density_control_stats)
+        self._collect_training_snapshot(iteration, 'after_densify')
         if iteration < self.DENSIFICATION_END_ITERATION:
             self.model.gaussians.reset_densification_info()
         if self.requires_empty_cache:
@@ -163,17 +258,21 @@ class FasterGSFusedTrainer(GuiTrainer):
 
     @training_callback(priority=90, start_iteration='OPACITY_RESET_INTERVAL', end_iteration='DENSIFICATION_END_ITERATION', iteration_stride='OPACITY_RESET_INTERVAL')
     @torch.no_grad()
-    def reset_opacities(self, *_) -> None:
+    def reset_opacities(self, iteration: int, *_) -> None:
         """Reset opacities."""
         self.model.gaussians.reset_opacities()
+        self._record_training_event(iteration, 'opacity_reset', self.model.gaussians.last_opacity_reset_stats)
+        self._collect_training_snapshot(iteration, 'after_opacity_reset')
 
     @training_callback(priority=90, start_iteration='EXTRA_OPACITY_RESET_ITERATION', end_iteration='EXTRA_OPACITY_RESET_ITERATION')
     @torch.no_grad()
-    def reset_opacities_extra(self, _, dataset: 'BaseDataset') -> None:
+    def reset_opacities_extra(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Reset opacities one additional time when using a white background."""
         if torch.allclose(dataset.default_camera.background_color, torch.ones_like(dataset.default_camera.background_color)):
             Logger.log_info('resetting opacities one additional time because using white background')
             self.model.gaussians.reset_opacities()
+            self._record_training_event(iteration, 'opacity_reset_extra', self.model.gaussians.last_opacity_reset_stats)
+            self._collect_training_snapshot(iteration, 'after_opacity_reset_extra')
 
     @training_callback(
         priority=95,
@@ -195,6 +294,8 @@ class FasterGSFusedTrainer(GuiTrainer):
         if pruning_score is None:
             return
         self.model.gaussians.final_prune_fastgs(0.1, pruning_score, self.FASTGS_FINAL_PRUNE_SCORE_THRESHOLD)
+        self._record_training_event(_, 'final_prune', self.model.gaussians.last_final_prune_stats)
+        self._collect_training_snapshot(_, 'after_final_prune')
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
 
@@ -233,6 +334,8 @@ class FasterGSFusedTrainer(GuiTrainer):
         loss = self.loss(image, rgb_gt) + 0.0 * autograd_dummy
         # backward
         loss.backward()
+        if iteration == 0 or (self.DIAGNOSTICS_INTERVAL > 0 and (iteration + 1) % self.DIAGNOSTICS_INTERVAL == 0):
+            self._collect_training_snapshot(iteration, 'periodic')
 
     @training_callback(priority=85)
     @torch.no_grad()
@@ -251,6 +354,8 @@ class FasterGSFusedTrainer(GuiTrainer):
             self.fastgs_sh_step_count += 1
             adam_step_count_sh = self.fastgs_sh_step_count
         self.model.gaussians.optimizer_step_fastgs(adam_step_count_main, adam_step_count_sh)
+        if iteration == 0 or (self.DIAGNOSTICS_INTERVAL > 0 and (iteration + 1) % self.DIAGNOSTICS_INTERVAL == 0):
+            self._collect_training_snapshot(iteration, 'post_optimizer')
 
     @training_callback(active='WANDB.ACTIVATE', priority=10, iteration_stride='WANDB.INTERVAL')
     @torch.no_grad()
@@ -266,6 +371,7 @@ class FasterGSFusedTrainer(GuiTrainer):
     @torch.no_grad()
     def finalize(self, *_) -> None:
         """Clean up after training."""
+        self._collect_training_snapshot(self.model.num_iterations_trained, 'pre_finalize')
         n_gaussians = self.model.gaussians.training_cleanup(min_opacity=self.MIN_OPACITY_AFTER_TRAINING)
         Logger.log_info(f'final number of Gaussians: {n_gaussians:,}')
         with open(str(self.output_directory / 'n_gaussians.txt'), 'w') as n_gaussians_file:
@@ -274,3 +380,4 @@ class FasterGSFusedTrainer(GuiTrainer):
                 f'\n'
                 f'N_Gaussians:{n_gaussians}'
             )
+        self._write_training_diagnostics(self.output_directory / 'training_diagnostics.txt')

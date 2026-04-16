@@ -41,6 +41,9 @@ class Gaussians(torch.nn.Module):
         self.lr_opacities = 0.0
         self.lr_scales = 0.0
         self.lr_rotations = 0.0
+        self.last_adaptive_density_control_stats = {}
+        self.last_final_prune_stats = {}
+        self.last_opacity_reset_stats = {}
         # adam moments
         self.moments_means = torch.empty(0)
         self.moments_sh_coefficients_0 = torch.empty(0)
@@ -190,9 +193,16 @@ class Gaussians(torch.nn.Module):
 
     def reset_opacities(self) -> None:
         """Resets the opacities to a fixed value."""
+        num_clamped = int((self._opacities > -4.595119953155518).sum().item())
         self._opacities.clamp_max_(-4.595119953155518)  # sigmoid(-4.595119953155518) = 0.01
         self.moments_opacities.zero_()
         self.grad_accum_opacities.zero_()
+        self.last_opacity_reset_stats = {
+            'num_clamped': num_clamped,
+            'target_raw_opacity_max': -4.595119953155518,
+            'target_opacity_max': 0.01,
+            'n_gaussians_after': int(self._means.shape[0]),
+        }
 
     def reset_max_radii2D(self) -> None:
         """Reset FastGS-style screen-space size tracking."""
@@ -500,6 +510,7 @@ class Gaussians(torch.nn.Module):
         max_screen_size: float | None,
     ) -> None:
         """Apply FastGS-style densify/prune policy on top of the fused backend state."""
+        n_before = int(self._means.shape[0])
         grad_mean, grad_mean_abs = self._densification_grad_stats()
         grad_qualifiers = torch.norm(grad_mean, dim=1) >= grad_threshold
         grad_qualifiers_abs = torch.norm(grad_mean_abs, dim=1) >= grad_abs_threshold
@@ -511,15 +522,25 @@ class Gaussians(torch.nn.Module):
         all_clones = torch.logical_and(clone_qualifiers, grad_qualifiers)
         all_splits = torch.logical_and(split_qualifiers, grad_qualifiers_abs)
 
-        self.densify_and_clone_fastgs(metric_mask, all_clones)
-        self.densify_and_split_fastgs(metric_mask, all_splits)
+        clone_candidates = int(torch.logical_and(metric_mask, all_clones).sum().item())
+        split_candidates = int(torch.logical_and(metric_mask, all_splits).sum().item())
+        cloned = self.densify_and_clone_fastgs(metric_mask, all_clones)
+        split_children = self.densify_and_split_fastgs(metric_mask, all_splits)
 
         prune_mask = (self.opacities < min_opacity).flatten()
+        low_opacity_prune = int(prune_mask.sum().item())
+        big_screen_prune = 0
+        big_world_prune = 0
         if max_screen_size is not None:
-            prune_mask |= self.max_radii2D > max_screen_size
-            prune_mask |= self.scales.max(dim=1).values > 0.1 * self.training_cameras_extent
+            big_screen_mask = self.max_radii2D > max_screen_size
+            big_world_mask = self.scales.max(dim=1).values > 0.1 * self.training_cameras_extent
+            big_screen_prune = int(big_screen_mask.sum().item())
+            big_world_prune = int(big_world_mask.sum().item())
+            prune_mask |= big_screen_mask
+            prune_mask |= big_world_mask
 
         remove_budget = int(0.5 * prune_mask.sum().item())
+        sampled_prune = 0
         if remove_budget > 0:
             scores = 1.0 - pruning_score.reshape(-1).to(dtype=torch.float32)
             padded_weights = torch.zeros_like(prune_mask, dtype=torch.float32, device='cuda')
@@ -529,16 +550,54 @@ class Gaussians(torch.nn.Module):
                 sampled_indices = torch.multinomial(padded_weights, remove_budget, replacement=False)
                 selected_pts_mask = torch.zeros_like(prune_mask, dtype=torch.bool, device='cuda')
                 selected_pts_mask[sampled_indices] = True
-                self.prune(torch.logical_and(prune_mask, selected_pts_mask))
+                final_prune_mask = torch.logical_and(prune_mask, selected_pts_mask)
+                sampled_prune = int(final_prune_mask.sum().item())
+                self.prune(final_prune_mask)
 
         self.reset_max_radii2D()
         self._cap_opacities(0.8)
+        importance_score_f = importance_score.to(dtype=torch.float32)
+        pruning_score_f = pruning_score.to(dtype=torch.float32)
+        self.last_adaptive_density_control_stats = {
+            'n_gaussians_before': n_before,
+            'n_gaussians_after': int(self._means.shape[0]),
+            'clone_candidates': clone_candidates,
+            'split_candidates': split_candidates,
+            'cloned': int(cloned),
+            'split_children': int(split_children),
+            'prune_mask_count': int(prune_mask.sum().item()),
+            'sampled_prune': sampled_prune,
+            'low_opacity_prune': low_opacity_prune,
+            'big_screen_prune': big_screen_prune,
+            'big_world_prune': big_world_prune,
+            'remove_budget': remove_budget,
+            'importance_mean': float(importance_score_f.mean().item()),
+            'importance_max': float(importance_score_f.max().item()),
+            'pruning_mean': float(pruning_score_f.mean().item()),
+            'pruning_max': float(pruning_score_f.max().item()),
+            'grad_norm_mean': float(torch.norm(grad_mean, dim=1).mean().item()),
+            'grad_abs_norm_mean': float(torch.norm(grad_mean_abs, dim=1).mean().item()),
+            'size_threshold': float(size_threshold),
+            'max_screen_size': None if max_screen_size is None else float(max_screen_size),
+        }
 
     def final_prune_fastgs(self, min_opacity: float, pruning_score: torch.Tensor, score_threshold: float = 0.9) -> None:
         """Apply FastGS's late aggressive pruning stage."""
+        n_before = int(self._means.shape[0])
         prune_mask = (self.opacities < min_opacity).flatten()
         prune_mask |= pruning_score.reshape(-1) > score_threshold
+        pruned = int(prune_mask.sum().item())
         self.prune(prune_mask)
+        pruning_score_f = pruning_score.to(dtype=torch.float32)
+        self.last_final_prune_stats = {
+            'n_gaussians_before': n_before,
+            'n_gaussians_after': int(self._means.shape[0]),
+            'pruned': pruned,
+            'min_opacity': float(min_opacity),
+            'score_threshold': float(score_threshold),
+            'pruning_mean': float(pruning_score_f.mean().item()),
+            'pruning_max': float(pruning_score_f.max().item()),
+        }
 
     def apply_morton_ordering(self) -> None:
         """Applies Morton ordering to the Gaussians."""
