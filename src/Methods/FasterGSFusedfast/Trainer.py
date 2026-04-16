@@ -94,9 +94,19 @@ class FasterGSFusedTrainer(GuiTrainer):
                 parts.append(f'{key}={value}')
         return ', '.join(parts)
 
+    @staticmethod
+    def _normalize_iteration(iteration) -> int:
+        """Convert callback iteration values to a stable Python int for diagnostics."""
+        if isinstance(iteration, torch.Tensor):
+            if iteration.numel() != 1:
+                raise ValueError(f'expected scalar iteration tensor, got shape {tuple(iteration.shape)}')
+            return int(iteration.item())
+        return int(iteration)
+
     @torch.no_grad()
     def _collect_training_snapshot(self, iteration: int, tag: str) -> None:
         """Collect a compact state snapshot for later postmortem inspection."""
+        iteration = self._normalize_iteration(iteration)
         gaussians = self.model.gaussians
         opacity = gaussians.opacities.reshape(-1)
         max_scale = gaussians.scales.max(dim=1).values
@@ -130,7 +140,7 @@ class FasterGSFusedTrainer(GuiTrainer):
 
     def _record_training_event(self, iteration: int, tag: str, stats: dict) -> None:
         """Store a structured training event for later dump to text."""
-        event = {'tag': tag, 'iteration': int(iteration)}
+        event = {'tag': tag, 'iteration': self._normalize_iteration(iteration)}
         event.update(stats)
         self.training_diagnostics_events.append(event)
 
@@ -281,7 +291,7 @@ class FasterGSFusedTrainer(GuiTrainer):
         iteration_stride='FASTGS_FINAL_PRUNE_INTERVAL',
     )
     @torch.no_grad()
-    def fastgs_final_prune(self, _, dataset: 'BaseDataset') -> None:
+    def fastgs_final_prune(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Apply the late-stage FastGS multi-view consistent pruning schedule."""
         _, pruning_score = compute_gaussian_scores_fastgs(
             dataset=dataset.train(),
@@ -294,8 +304,8 @@ class FasterGSFusedTrainer(GuiTrainer):
         if pruning_score is None:
             return
         self.model.gaussians.final_prune_fastgs(0.1, pruning_score, self.FASTGS_FINAL_PRUNE_SCORE_THRESHOLD)
-        self._record_training_event(_, 'final_prune', self.model.gaussians.last_final_prune_stats)
-        self._collect_training_snapshot(_, 'after_final_prune')
+        self._record_training_event(iteration, 'final_prune', self.model.gaussians.last_final_prune_stats)
+        self._collect_training_snapshot(iteration, 'after_final_prune')
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
 
