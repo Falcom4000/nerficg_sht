@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# benchmark.sh — unified benchmark runner for FasterGS / FasterGSFused / FasterGSDash / FasterGSFusedDash
+# benchmark.sh — unified benchmark runner for GaussianSplatting / FasterGS / FasterGSFused / FasterGSFusedfast / FasterGSDash / FasterGSFusedDash
 #
 # Usage:
 #   bash scripts/benchmark.sh [--methods m1,m2,...] [--scenes s1,s2,...] [--repeats N]
 #
-# Methods: fastergs | fastergsfused | fastergsdash | fastergsfuseddash  (default: all four)
+# Methods: gaussiansplatting | fastergs | fastergsfused | fastergsfusedfast | fastergsdash | fastergsfuseddash  (default: all)
 # Scenes:  bonsai | counter | kitchen | room | bicycle | garden | stump  (default: bonsai)
 # Repeats: integer ≥ 1 (default: 1)
 #
 # Examples:
 #   bash scripts/benchmark.sh
-#       → all 4 methods × bonsai × 1 run
+#       → all methods × bonsai × 1 run
 #
 #   bash scripts/benchmark.sh --methods fastergsdash,fastergsfuseddash --scenes bonsai,garden,bicycle --repeats 3
 #       → 2 methods × 3 scenes × 3 repeats = 18 runs
@@ -31,6 +31,7 @@ declare -A METHOD_CONFIG_DIR=(
     [gaussiansplatting]="configs/benchmark/gaussiansplatting"
     [fastergs]="configs/benchmark/fastergs"
     [fastergsfused]="configs/benchmark/fastergsfused"
+    [fastergsfusedfast]="configs/benchmark/fastergsfusedfast"
     [fastergsdash]="configs/benchmark/fastergsdash"
     [fastergsfuseddash]="configs/benchmark/fastergsfuseddash"
 )
@@ -38,6 +39,7 @@ declare -A METHOD_OUTPUT_DIR=(
     [gaussiansplatting]="output/GaussianSplatting"
     [fastergs]="output/FasterGS"
     [fastergsfused]="output/FasterGSFused"
+    [fastergsfusedfast]="output/FasterGSFusedfast"
     [fastergsdash]="output/FasterGSDash"
     [fastergsfuseddash]="output/FasterGSFusedDash"
 )
@@ -45,11 +47,12 @@ declare -A METHOD_DISPLAY=(
     [gaussiansplatting]="GaussianSplatting"
     [fastergs]="FasterGS"
     [fastergsfused]="FasterGSFused"
+    [fastergsfusedfast]="FasterGSFusedfast"
     [fastergsdash]="FasterGSDash"
     [fastergsfuseddash]="FasterGSFusedDash"
 )
 
-ALL_METHODS=(gaussiansplatting fastergs fastergsfused fastergsdash fastergsfuseddash)
+ALL_METHODS=(gaussiansplatting fastergs fastergsfused fastergsfusedfast fastergsdash fastergsfuseddash)
 ALL_SCENES=(bonsai counter kitchen room bicycle garden stump)
 
 # ── defaults ──────────────────────────────────────────────────────────────────
