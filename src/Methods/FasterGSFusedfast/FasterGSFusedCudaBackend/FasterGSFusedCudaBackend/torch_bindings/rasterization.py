@@ -18,6 +18,7 @@ class RasterizerSettings(NamedTuple):
     center_y: float  # y coordinate of the image center in pixels (positive -> down)
     near_plane: float  # near clipping plane distance
     far_plane: float  # far clipping plane distance
+    compact_box_mult: float  # FastGS compact-box beta used for tile culling bounds
     current_mean_lr: float
     adam_step_count: int
 
@@ -35,6 +36,7 @@ class RasterizerSettings(NamedTuple):
             self.center_y,
             self.near_plane,
             self.far_plane,
+            self.compact_box_mult,
             self.current_mean_lr,
             self.adam_step_count,
         )

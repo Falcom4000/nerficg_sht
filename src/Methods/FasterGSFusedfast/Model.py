@@ -33,6 +33,7 @@ class Gaussians(torch.nn.Module):
         self.max_radii2D = torch.empty(0)
         self.percent_dense = 0.0
         self.fastgs_dense = 0.0
+        self.fastgs_compact_box_mult = 0.5
         self.training_cameras_extent = 1.0
         self.lr_means = 0.0
         self.lr_means_scheduler = None
@@ -110,7 +111,7 @@ class Gaussians(torch.nn.Module):
 
     @property
     def densification_info(self) -> torch.Tensor:
-        """Returns the current densification info buffers (5, N)."""
+        """Returns the current densification info buffers (3, N)."""
         return self._densification_info
 
     @property
@@ -173,6 +174,7 @@ class Gaussians(torch.nn.Module):
         """Sets up the optimizer."""
         self.percent_dense = training_wrapper.DENSIFICATION_PERCENT_DENSE
         self.fastgs_dense = training_wrapper.FASTGS_DENSE_THRESHOLD
+        self.fastgs_compact_box_mult = training_wrapper.FASTGS_COMPACT_BOX_MULT
         self.training_cameras_extent = training_cameras_extent
 
         self.lr_means = training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_INIT * self.training_cameras_extent
@@ -273,13 +275,13 @@ class Gaussians(torch.nn.Module):
             self._densification_info = self._densification_info[:, ordering].contiguous()
 
     def reset_densification_info(self):
-        self._densification_info = torch.zeros((5, self._means.shape[0]), dtype=torch.float32, device='cuda')
+        self._densification_info = torch.zeros((3, self._means.shape[0]), dtype=torch.float32, device='cuda')
 
     def _densification_grad_stats(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return FastGS-style signed and absolute screen-space gradient means."""
+        """Return FastGS-style means of per-view gradient norms."""
         counts = self.densification_info[0].clamp_min(1.0).unsqueeze(1)
-        grad_mean = self.densification_info[1:3].T / counts
-        grad_mean_abs = self.densification_info[3:5].T / counts
+        grad_mean = self.densification_info[1:2].T / counts
+        grad_mean_abs = self.densification_info[2:3].T / counts
         grad_mean[torch.isnan(grad_mean)] = 0.0
         grad_mean_abs[torch.isnan(grad_mean_abs)] = 0.0
         return grad_mean, grad_mean_abs

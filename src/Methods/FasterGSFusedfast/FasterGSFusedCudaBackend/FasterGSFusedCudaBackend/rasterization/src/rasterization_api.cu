@@ -28,6 +28,7 @@ faster_gs::rasterization::forward_wrapper(
     const float center_y,
     const float near_plane,
     const float far_plane,
+    const float compact_box_mult,
     const float current_mean_lr,
     const int adam_step_count)
 {
@@ -80,7 +81,8 @@ faster_gs::rasterization::forward_wrapper(
         center_x,
         center_y,
         near_plane,
-        far_plane
+        far_plane,
+        compact_box_mult
     );
 
     return {
@@ -111,6 +113,7 @@ faster_gs::rasterization::score_forward_wrapper(
     const float center_y,
     const float near_plane,
     const float far_plane,
+    const float compact_box_mult,
     const float current_mean_lr,
     const int adam_step_count)
 {
@@ -173,7 +176,8 @@ faster_gs::rasterization::score_forward_wrapper(
         center_x,
         center_y,
         near_plane,
-        far_plane
+        far_plane,
+        compact_box_mult
     );
 
     return {image, accum_metric_counts};
@@ -217,6 +221,7 @@ void faster_gs::rasterization::backward_wrapper(
     const float center_y,
     const float near_plane,
     const float far_plane,
+    const float compact_box_mult,
     const float current_mean_lr, // TODO: fuse this in as well based on adam_step_count
     const int adam_step_count,
     const int n_instances,
@@ -229,6 +234,7 @@ void faster_gs::rasterization::backward_wrapper(
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
+    (void)compact_box_mult;
     torch::Tensor grad_colors = torch::zeros({n_primitives, 3}, float_options);
     torch::Tensor grad_opacities = torch::zeros({n_primitives, 1}, float_options); // TODO: fuse into grad_conic_helper
     torch::Tensor grad_mean2d_helper = torch::zeros({n_primitives, 4}, float_options);

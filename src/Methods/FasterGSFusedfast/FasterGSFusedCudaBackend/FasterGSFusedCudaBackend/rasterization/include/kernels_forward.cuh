@@ -42,7 +42,8 @@ namespace faster_gs::rasterization::kernels::forward {
         const float center_x,
         const float center_y,
         const float near_plane,
-        const float far_plane)
+        const float far_plane,
+        const float compact_box_mult)
     {
         constexpr uint warp_size = 32;
         auto block = cg::this_thread_block();
@@ -160,7 +161,7 @@ namespace faster_gs::rasterization::kernels::forward {
         );
 
         // compute bounds
-        const float power_threshold = logf(opacity * config::min_alpha_threshold_rcp);
+        const float power_threshold = compact_box_mult * logf(opacity * config::min_alpha_threshold_rcp);
         const float cutoff_factor = 2.0f * power_threshold;
         const float extent_x = fmaxf(sqrtf(cov2d.x * cutoff_factor) - 0.5f, 0.0f);
         const float extent_y = fmaxf(sqrtf(cov2d.z * cutoff_factor) - 0.5f, 0.0f);
@@ -232,7 +233,8 @@ namespace faster_gs::rasterization::kernels::forward {
         ushort* __restrict__ instance_keys,
         uint* __restrict__ instance_primitive_indices,
         const uint grid_width,
-        const uint n_visible_primitives)
+        const uint n_visible_primitives,
+        const float compact_box_mult)
     {
         constexpr uint warp_size = 32;
         auto block = cg::this_thread_block();
@@ -263,7 +265,7 @@ namespace faster_gs::rasterization::kernels::forward {
         const float4 conic_opacity = primitive_conic_opacity[primitive_idx];
         const float3 conic = make_float3(conic_opacity);
         const float opacity = conic_opacity.w;
-        const float power_threshold = logf(opacity * config::min_alpha_threshold_rcp);
+        const float power_threshold = compact_box_mult * logf(opacity * config::min_alpha_threshold_rcp);
 
         uint current_write_offset = primitive_offsets[original_idx];
 

@@ -25,6 +25,7 @@ namespace faster_gs::rasterization {
         const float center_y,
         const float near_plane,
         const float far_plane,
+        const float compact_box_mult,
         const float current_mean_lr,
         const int adam_step_count);
 
@@ -49,6 +50,7 @@ namespace faster_gs::rasterization {
         const float center_y,
         const float near_plane,
         const float far_plane,
+        const float compact_box_mult,
         const float current_mean_lr,
         const int adam_step_count);
 
@@ -90,6 +92,7 @@ namespace faster_gs::rasterization {
         const float center_y,
         const float near_plane,
         const float far_plane,
+        const float compact_box_mult,
         const float current_mean_lr, // fuse this in as well based on adam_step_count
         const int adam_step_count,
         const int n_instances,

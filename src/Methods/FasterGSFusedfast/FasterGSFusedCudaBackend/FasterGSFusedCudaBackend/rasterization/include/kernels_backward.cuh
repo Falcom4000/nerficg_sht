@@ -178,10 +178,8 @@ namespace faster_gs::rasterization::kernels::backward {
                 dL_dmean2d.z * width,
                 dL_dmean2d.w * height
             );
-            densification_info[n_primitives + primitive_idx] += dL_dmean2d_ndc.x;
-            densification_info[2 * n_primitives + primitive_idx] += dL_dmean2d_ndc.y;
-            densification_info[3 * n_primitives + primitive_idx] += dL_dmean2d_ndc_abs.x;
-            densification_info[4 * n_primitives + primitive_idx] += dL_dmean2d_ndc_abs.y;
+            densification_info[n_primitives + primitive_idx] += length(dL_dmean2d_ndc);
+            densification_info[2 * n_primitives + primitive_idx] += length(dL_dmean2d_ndc_abs);
         }
 
         // mean3d camera space gradient from mean2d

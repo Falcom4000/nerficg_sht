@@ -20,6 +20,7 @@ def extract_settings(
     bg_color: torch.Tensor,
     current_mean_lr: float,
     adam_step_count: int,
+    compact_box_mult: float,
 ) -> RasterizerSettings:
     if not isinstance(view.camera, PerspectiveCamera):
         raise Framework.RendererError('FasterGSFused renderer only supports perspective cameras')
@@ -38,6 +39,7 @@ def extract_settings(
         view.camera.center_y,
         view.camera.near_plane,
         view.camera.far_plane,
+        compact_box_mult,
         current_mean_lr,
         adam_step_count,
     )
@@ -96,7 +98,14 @@ class FasterGSFusedRenderer(BaseRenderer):
             moments_sh_coefficients_rest=self.model.gaussians.moments_sh_coefficients_rest,
             autograd_dummy=autograd_dummy,
             densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
-            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.model.gaussians.lr_means, adam_step_count_main),
+            rasterizer_settings=extract_settings(
+                view,
+                self.model.gaussians.active_sh_bases,
+                bg_color,
+                self.model.gaussians.lr_means,
+                adam_step_count_main,
+                self.model.gaussians.fastgs_compact_box_mult,
+            ),
             adam_step_count_sh=adam_step_count_sh,
             apply_parameter_updates=apply_parameter_updates,
             update_sh_coefficients=update_sh_coefficients,
@@ -114,7 +123,14 @@ class FasterGSFusedRenderer(BaseRenderer):
             sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             metric_map=metric_map,
-            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, 0.0, 0),
+            rasterizer_settings=extract_settings(
+                view,
+                self.model.gaussians.active_sh_bases,
+                bg_color,
+                0.0,
+                0,
+                self.model.gaussians.fastgs_compact_box_mult,
+            ),
         )
         return accum_metric_counts
 
@@ -142,6 +158,7 @@ class FasterGSFusedRenderer(BaseRenderer):
                 view.camera.background_color if bg_color is None else bg_color,
                 0.0,
                 0,
+                self.model.gaussians.fastgs_compact_box_mult,
             ),
             grad_accum_means=torch.empty(0),
             grad_accum_scales=torch.empty(0),
